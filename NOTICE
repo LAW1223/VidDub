@@ -1,0 +1,10 @@
+VidDub release preparation snapshot, 2026-10-16.
+
+This repository contains a reduced Wan2.1-VACE foundation derived from
+Apache-2.0 DiffSynth-Studio. VidDub audio conditioning and causal VAE support
+are integrated directly in that retained source subset. The upstream revision
+and scope are recorded in dependencies/README.md.
+
+The causal consistency adaptation includes a dedicated notice at
+causal/cf/NOTICE. Model and dataset artifacts are distributed separately and
+may be governed by additional upstream terms.

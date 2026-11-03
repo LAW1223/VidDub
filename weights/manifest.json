@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "updated": "2026-11-01",
+  "selected_model": "viddub-full2-dmd-r4-step100",
+  "artifacts": [
+    {"name": "sft-r2a-ema200", "stage": "bidirectional_sft", "step": 200},
+    {"name": "full2-ode-r3-step400", "stage": "ode", "step": 400, "causal": false, "config": "configs/full_context/ode2.json"},
+    {"name": "full2-fake-r3-step200", "stage": "dmd", "step": 200, "causal": false, "config": "configs/full_context/fake2.json"},
+    {
+      "name": "viddub-full2-dmd-r4-step100",
+      "source_run": "FULL2_DMD_R4",
+      "stage": "dmd",
+      "step": 100,
+      "causal": false,
+      "student_steps": 2,
+      "inference_audio_cfg": 1,
+      "config": "configs/full_context/dmd2.json",
+      "selected": true
+    }
+  ],
+  "note": "Checksums are generated in the separate release-assets directory; this Git manifest contains no workstation paths."
+}

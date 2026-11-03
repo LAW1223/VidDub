@@ -1,0 +1,124 @@
+VidDub Individual Commercial and Research License
+Version 1.0, 28 October 2026
+
+By downloading, accessing, using, modifying, or distributing VidDub, you
+agree to this License.
+
+1. Definitions
+
+"VidDub" means the VidDub source code, model weights, configuration
+files, documentation, and any derivatives distributed with this License,
+excluding Third-Party Components.
+
+"Licensor" means the copyright owner or owners authorized to license
+VidDub.
+
+"Individual Use" means use by a natural person acting on their own behalf,
+including personal use and commercial work performed by that individual. It
+does not include use on behalf of an employer, corporation, partnership, or
+other for-profit legal entity.
+
+"Research Use" means non-commercial academic research, education, evaluation,
+or reproducibility work performed by an individual or a non-profit academic or
+research institution.
+
+"Hosted Service" means any service through which a third party can access,
+invoke, or benefit from VidDub functionality over a network or through a
+managed interface. This includes software-as-a-service (SaaS), APIs, web
+applications, hosted inference, bots, platform integrations, and managed
+services, whether paid or free.
+
+"Third-Party Components" means software, models, data, or other materials
+identified as being governed by separate license terms.
+
+2. License Grant
+
+Subject to this License, the licensor grants you a worldwide, non-exclusive,
+non-transferable, non-sublicensable, royalty-free license to:
+
+a. use VidDub for Individual Use and Research Use, including creating and
+   monetizing outputs as an individual;
+b. modify VidDub for those permitted uses; and
+c. reproduce and redistribute unmodified or modified copies solely to enable
+   another recipient's Individual Use or Research Use, provided that you include
+   this License, preserve all copyright and attribution notices, clearly mark
+   modified files, and impose no terms that conflict with this License.
+
+3. Hosted-Service Prohibition
+
+You may not use VidDub, or any modified version or derivative of VidDub,
+to provide or support a Hosted Service. You may not expose VidDub
+functionality, model inference, or a substantially similar derivative to third
+parties through an API, website, application, bot, platform, cloud endpoint,
+managed deployment, or other remote-access service.
+
+This prohibition applies whether access is public or private, paid or free,
+and whether VidDub is the primary service or a component of another
+product. A separate written license from the licensor is required for any such
+use.
+
+For clarity, an individual may charge for completed videos or other outputs,
+or perform project-based creative work, provided that the individual operates
+VidDub themselves and does not give a client or other third party access to
+the model or its inference functionality.
+
+4. Other Prohibited Uses
+
+Unless separately authorized in writing by the licensor, you may not:
+
+a. use VidDub on behalf of an employer, corporation, partnership, or other
+   for-profit legal entity, except for internal non-production evaluation;
+b. sell, rent, sublicense, or otherwise monetize VidDub or access to it;
+c. remove or obscure license, copyright, provenance, or attribution notices;
+d. use VidDub in violation of applicable law or without the permissions
+   required for the media, voices, likenesses, and personal data involved; or
+e. use VidDub for impersonation, fraud, harassment, non-consensual sexual
+   content, deceptive political or media manipulation, or other harmful or
+   unlawful activity.
+
+5. Outputs
+
+The licensor claims no copyright in outputs you create with VidDub. You may
+use and monetize outputs under Individual Use. However, your use of VidDub
+to create outputs remains subject to this License, including the
+Hosted-Service Prohibition, and outputs may be subject to third-party rights
+and applicable law.
+
+6. Third-Party Components
+
+This License applies only to rights the licensor is authorized to grant.
+Third-Party Components remain governed by their respective terms. In
+particular, the retained Wan/VACE foundation and causal-consistency-derived
+code identified in the repository notices remain under Apache License 2.0.
+A copy is provided at `dependencies/licenses/Apache-2.0.txt`.
+
+7. No Trademark License
+
+This License does not grant permission to use the VidDub name, logos, or
+other marks except as reasonably necessary to describe the origin of an
+unmodified or modified copy.
+
+8. Termination
+
+Your rights under this License terminate automatically if you violate its
+terms. Upon termination, you must stop using and distributing VidDub and
+delete all copies under your control. Sections 5 through 10 survive
+termination.
+
+9. Disclaimer
+
+VIDDUB IS PROVIDED "AS IS", WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF TITLE, NON-INFRINGEMENT,
+MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE. YOU ARE SOLELY
+RESPONSIBLE FOR YOUR USE OF VIDDUB AND ITS OUTPUTS.
+
+10. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR WILL NOT BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES, OR
+FOR ANY LOSS OF DATA, PROFITS, GOODWILL, OR BUSINESS INTERRUPTION, ARISING FROM
+OR RELATED TO VIDDUB OR THIS LICENSE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGES.
+
+For commercial, hosted-service, or other licensing permissions, contact the
+licensor through the official VidDub repository.

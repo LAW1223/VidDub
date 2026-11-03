@@ -1,0 +1,12 @@
+Reduced DiffSynth-Studio Wan2.1-VACE foundation
+
+Derived from DiffSynth-Studio commit
+7686e54d41d25c0e8ed5f1318acc23b6bb832654 under the Apache License 2.0.
+
+Retained components: Wan DiT, VACE, Wan VAE, Wan T5/tokenizer, gradient
+checkpointing, and the Wan flow-matching schedule. Unrelated model families and
+optional Wan methods were removed. VidDub adds frame-local audio
+cross-attention integration and causal streaming VAE helpers.
+
+The Apache-2.0 license text is available at
+../dependencies/licenses/Apache-2.0.txt.

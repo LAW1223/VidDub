@@ -1,0 +1,18 @@
+Wan-Dub Causal Forcing++ adaptation
+
+The flow-matching scheduler compatibility code is adapted from the official
+Causal-Forcing repository, commit da3ddf1a590f30c9edc568e11c2f77170995c31c,
+under Apache-2.0. The license text is retained under
+dependencies/licenses/Apache-2.0.txt.
+
+The adjacent-timestep consistency algorithm and re-noising sampler in this
+directory are adaptations of model/naive_consistency.py,
+utils/wan_wrapper.py, pipeline/causal_inference.py and
+pipeline/self_forcing_training.py from that repository. The DMD adapter follows
+model/dmd.py with documented differences in gradient truncation and conditioning.
+
+Changes by the Wan-Dub integration: VACE/audio conditions, independent reference,
+split-backward CD, sampled-chunk DMD gradients, explicit sampler metadata,
+finite jobs, full training-state restore, task-specific GT/Sync objectives and
+source-matched validation. See the repository README and
+`docs/ARCHITECTURE.md` for the public implementation scope.

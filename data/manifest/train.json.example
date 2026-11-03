@@ -1,0 +1,20 @@
+[
+  {
+    "id": "source_video_000001",
+    "clip_id": "source_video_000001_000000",
+    "dir": "h3/000/source_video_000001_000000",
+    "prompt": "front-facing speaker",
+    "source": "h3",
+    "domain": "H3",
+    "group": "source_video_000001"
+  },
+  {
+    "id": "source_video_000002",
+    "clip_id": "source_video_000002_000000",
+    "dir": "h3/000/source_video_000002_000000",
+    "prompt": "front-facing speaker",
+    "source": "h3",
+    "domain": "H3",
+    "group": "source_video_000002"
+  }
+]
