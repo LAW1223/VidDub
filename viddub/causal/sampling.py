@@ -120,6 +120,78 @@ def rollout(model, shape_reference, conditions, sigmas, *, noise=None,
     validate_schedule(sigmas)
     if audio_cfg < 0:
         raise ValueError("audio_cfg must be nonnegative")
+    if not model.causal:
+        if use_cache:
+            raise ValueError(
+                "Bidirectional full-context rollout cannot use a history cache")
+        if on_chunk is not None or max_video_history_frames is not None:
+            raise ValueError(
+                "Streaming callbacks/history bounds are causal-only")
+        noise = torch.randn_like(shape_reference) if noise is None else noise
+        if noise.shape != shape_reference.shape:
+            raise ValueError("noise shape mismatch")
+        ranges = model.config.video_blocks(shape_reference.shape[2])
+        if grad_chunk is not None and not 0 <= grad_chunk < len(ranges):
+            raise ValueError("grad_chunk is outside video chunks")
+        if grad_step is not None and not 0 <= grad_step < len(sigmas) - 1:
+            raise ValueError("grad_step outside schedule")
+        null = torch.ones(
+            shape_reference.shape[0],
+            device=shape_reference.device,
+            dtype=torch.bool,
+        )
+        current = noise
+        states = [current.detach().cpu()] if trajectory else None
+        stop = grad_step if grad_step is not None else len(sigmas) - 2
+        with evaluating(model):
+            for step in range(stop + 1):
+                keep_grad = grad_chunk is not None and step == stop
+                with torch.set_grad_enabled(keep_grad):
+                    ts = current.new_full(
+                        (current.shape[0], current.shape[2]),
+                        float(sigmas[step]) * 1000,
+                    )
+                    pred = model(
+                        current,
+                        ts,
+                        conditions["context"],
+                        conditions["vace_context"][:, :, :current.shape[2]],
+                        conditions["whisper_hs"],
+                        conditions["num_frames"],
+                        gradient_checkpointing=gradient_checkpointing,
+                        audio_tokens=conditions.get("audio_tokens"),
+                    )
+                    if audio_cfg != 1:
+                        pred_null = model(
+                            current,
+                            ts,
+                            conditions["context"],
+                            conditions["vace_context"][:, :, :current.shape[2]],
+                            conditions["whisper_hs"],
+                            conditions["num_frames"],
+                            null,
+                            gradient_checkpointing=gradient_checkpointing,
+                            audio_tokens=conditions.get("audio_tokens"),
+                        )
+                        pred = pred_null + audio_cfg * (pred - pred_null)
+                    if keep_grad and grad_step is not None:
+                        current = current.float() - sigmas[step] * pred.float()
+                    else:
+                        current = (
+                            current.float()
+                            + (sigmas[step + 1] - sigmas[step]) * pred.float()
+                        )
+                    current = current.to(shape_reference.dtype)
+                if trajectory:
+                    states.append(current.detach().cpu())
+        if trajectory:
+            record = {
+                "start": 0,
+                "end": shape_reference.shape[2],
+                "states": torch.stack(states),
+            }
+            return current, [record]
+        return current
     if history_mode not in ("full", "mouth_suppressed", "inactive"):
         raise ValueError("Unsupported history mode")
     n_ref = model.config.num_ref
