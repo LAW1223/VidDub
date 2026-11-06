@@ -13,8 +13,8 @@
   <a href="https://arxiv.org/abs/2611.03404"><img src="https://img.shields.io/badge/arXiv-2611.03404-b31b1b?style=flat-square&logo=arxiv&logoColor=white" alt="arXiv paper"></a>
   <a href="https://law1223.github.io/viddub-project-page/"><img src="https://img.shields.io/badge/Project-Page-0f766e?style=flat-square" alt="Project page"></a>
   <a href="https://github.com/LAW1223/VidDub"><img src="https://img.shields.io/badge/GitHub-Code-181717?style=flat-square&logo=github" alt="GitHub code"></a>
-  <a href="https://huggingface.co/spaces/hugging-apps/viddub-2611"><img src="https://img.shields.io/badge/🤗%20Demo-Try%20VidDub-ffd21e?style=flat-square" alt="VidDub community demo"></a>
-  <a href="https://github.com/LAW1223/OpenDub"><img src="https://img.shields.io/badge/OpenDub-Application-2563eb?style=flat-square&logo=github&logoColor=white" alt="OpenDub application"></a>
+  <a href="https://huggingface.co/spaces/hugging-apps/viddub-2611"><img src="assets/badge-demo.svg" alt="VidDub community demo"></a>
+  <a href="https://github.com/LAW1223/OpenDub"><img src="assets/badge-opendub.svg" alt="OpenDub application"></a>
   <a href="https://huggingface.co/AIPeanutman/VidDub"><img src="https://img.shields.io/badge/🤗%20Model-VidDub-ffd21e?style=flat-square" alt="Model weights"></a>
   <a href="https://huggingface.co/datasets/AIPeanutman/VidDub-Bench"><img src="https://img.shields.io/badge/🤗%20Benchmark-VidDub--Bench-ffd21e?style=flat-square" alt="VidDub-Bench"></a>
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
