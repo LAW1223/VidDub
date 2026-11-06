@@ -11,6 +11,7 @@ in this repository.
 - Project page: <https://law1223.github.io/viddub-project-page/>
 - Model weights: <https://huggingface.co/AIPeanutman/VidDub>
 - Benchmark: <https://huggingface.co/datasets/AIPeanutman/VidDub-Bench>
+- Companion application workbench: <https://github.com/LAW1223/OpenDub>
 - Selected release model: `FULL2_DMD_R4@100`
 
 VidDub is an offline, full-context video-dubbing editor. The released student
@@ -115,6 +116,10 @@ python scripts/audit_release.py --root .
 9. Preserve the 45,221-source / 85,435-window training-data selection. Its
    canonical Hub card is `data/TRAINING_DATA_CARD.md`; the media license is
    CC BY-NC 4.0 and is separate from the source/model license.
+10. Keep OpenDub described as a separate Apache-2.0 application. Its license
+    does not replace the VidDub source/model license. Do not claim that its
+    current Wan-Dub causal adapter wraps the released full-context VidDub model;
+    third-party access to VidDub inference remains a Hosted Service.
 
 ## Change checklist
 

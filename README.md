@@ -13,6 +13,7 @@
   <a href="https://arxiv.org/abs/2611.03404"><img src="https://img.shields.io/badge/arXiv-2611.03404-b31b1b?style=flat-square&logo=arxiv&logoColor=white" alt="arXiv paper"></a>
   <a href="https://law1223.github.io/viddub-project-page/"><img src="https://img.shields.io/badge/Project-Page-0f766e?style=flat-square" alt="Project page"></a>
   <a href="https://github.com/LAW1223/VidDub"><img src="https://img.shields.io/badge/GitHub-Code-181717?style=flat-square&logo=github" alt="GitHub code"></a>
+  <a href="https://github.com/LAW1223/OpenDub"><img src="https://img.shields.io/badge/App-OpenDub-2563EB?style=flat-square&logo=github" alt="OpenDub application"></a>
   <a href="https://huggingface.co/AIPeanutman/VidDub"><img src="https://img.shields.io/badge/🤗%20Model-VidDub-ffd21e?style=flat-square" alt="Model weights"></a>
   <a href="https://huggingface.co/datasets/AIPeanutman/VidDub-Bench"><img src="https://img.shields.io/badge/🤗%20Benchmark-VidDub--Bench-ffd21e?style=flat-square" alt="VidDub-Bench"></a>
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
@@ -22,6 +23,7 @@
 
 <p>
   <a href="#quick-start">Quick Start</a> ·
+  <a href="#opendub-application">Application</a> ·
   <a href="#how-it-works">Method</a> ·
   <a href="#model-release">Model</a> ·
   <a href="#training-and-reproduction">Training</a> ·
@@ -88,6 +90,8 @@ The frozen inputs and pairings are released as
 
 ## News
 
+- **2026-11-06:** [OpenDub](https://github.com/LAW1223/OpenDub), a browser-based
+  end-to-end video translation and dubbing workbench, released.
 - **2026-11-03:** Training code released.
 - **2026-11-03:** Model weights released on [Hugging Face](https://huggingface.co/AIPeanutman/VidDub).
 - **2026-11-02:** Paper released on [arXiv](https://arxiv.org/abs/2611.03404).
@@ -162,6 +166,21 @@ be disabled for ablation with `--no-color-harmonization`.
 
 The released full-context model fixes inference to two denoising steps.
 Incompatible architecture overrides are rejected.
+
+## OpenDub application
+
+[OpenDub](https://github.com/LAW1223/OpenDub) is a separate, browser-based
+workbench for end-to-end video translation and dubbing. It provides ASR,
+translation, TTS, timeline editing, media composition, and a pluggable lip-sync
+provider boundary for local, operator-controlled workflows.
+
+OpenDub does not redistribute or currently wrap the released VidDub
+full-context inference stack; use VidDub's CLI above for the public two-step
+model. OpenDub's application code is Apache-2.0, but that license would not
+replace the [VidDub license](LICENSE) for a future or custom VidDub adapter.
+In particular, exposing VidDub inference to third parties through a hosted
+service, website, API, bot, or managed deployment requires separate written
+permission.
 
 ## Model release
 

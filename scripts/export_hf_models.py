@@ -15,6 +15,7 @@ DEFAULT_OUTPUT_ROOT = REPO_ROOT / "export"
 PAPER_TITLE = "VidDub: Replacement-Aware Distillation for Two-Step Video Dubbing"
 PAPER_URL = "https://arxiv.org/abs/2611.03404"
 PROJECT_URL = "https://law1223.github.io/viddub-project-page/"
+OPENDUB_URL = "https://github.com/LAW1223/OpenDub"
 ARXIV_ID = "2611.03404"
 PAPER_AUTHORS = """Liu, Yexin and Lin, Yunlong and Wang, Zehan and He, Guangxin and
              Xu, Xinli and Zha, Jiajun and Liu, Yaofu and Wang, Yueze and
@@ -205,10 +206,13 @@ tags:
 - [Paper]({paper_url})
 - [Project page]({PROJECT_URL})
 - [Code]({github_url})
+- [OpenDub application]({OPENDUB_URL})
 - [VidDub-Bench](https://huggingface.co/datasets/AIPeanutman/VidDub-Bench)
 
 ## News
 
+- **2026-11-06:** [OpenDub]({OPENDUB_URL}), a browser-based end-to-end video
+  translation and dubbing workbench, released.
 - **2026-11-03:** Training code released.
 - **2026-11-03:** Model weights released.
 - **2026-11-02:** Paper released on [arXiv]({paper_url}).
@@ -271,6 +275,16 @@ overlaps are linearly blended, and lower-face color harmonization is enabled.
 --device cuda     Inference device
 --sft-steps 30    SFT only: override denoising steps
 ```
+
+## OpenDub application
+
+[OpenDub]({OPENDUB_URL}) is a separate Apache-2.0 browser workbench for ASR,
+translation, TTS, timeline editing, media composition, and pluggable lip-sync
+providers. It does not redistribute or currently wrap the released VidDub
+full-context inference stack; use the CLI above for this model. A future or
+custom VidDub adapter remains subject to the VidDub license, and third-party
+access through a hosted service, website, API, bot, or managed deployment
+requires separate written permission.
 
 ## Benchmark
 
