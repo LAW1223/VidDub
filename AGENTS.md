@@ -9,6 +9,7 @@ in this repository.
 - Paper URL: <https://arxiv.org/abs/2611.03404>
 - Code: <https://github.com/LAW1223/VidDub>
 - Project page: <https://law1223.github.io/viddub-project-page/>
+- Community demo: <https://huggingface.co/spaces/hugging-apps/viddub-2611>
 - Model weights: <https://huggingface.co/AIPeanutman/VidDub>
 - Benchmark: <https://huggingface.co/datasets/AIPeanutman/VidDub-Bench>
 - Companion application workbench: <https://github.com/LAW1223/OpenDub>

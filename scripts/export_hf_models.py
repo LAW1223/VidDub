@@ -15,6 +15,7 @@ DEFAULT_OUTPUT_ROOT = REPO_ROOT / "export"
 PAPER_TITLE = "VidDub: Replacement-Aware Distillation for Two-Step Video Dubbing"
 PAPER_URL = "https://arxiv.org/abs/2611.03404"
 PROJECT_URL = "https://law1223.github.io/viddub-project-page/"
+DEMO_URL = "https://huggingface.co/spaces/hugging-apps/viddub-2611"
 OPENDUB_URL = "https://github.com/LAW1223/OpenDub"
 ARXIV_ID = "2611.03404"
 PAPER_AUTHORS = """Liu, Yexin and Lin, Yunlong and Wang, Zehan and He, Guangxin and
@@ -206,11 +207,15 @@ tags:
 - [Paper]({paper_url})
 - [Project page]({PROJECT_URL})
 - [Code]({github_url})
+- [Community demo]({DEMO_URL})
 - [OpenDub application]({OPENDUB_URL})
 - [VidDub-Bench](https://huggingface.co/datasets/AIPeanutman/VidDub-Bench)
 
 ## News
 
+- **2026-11-06:** A [VidDub community demo]({DEMO_URL}) is live on Hugging Face
+  Spaces. Thanks to **Apolinario, from the open-source team at Hugging Face**,
+  for creating and hosting it.
 - **2026-11-06:** [OpenDub]({OPENDUB_URL}), a browser-based end-to-end video
   translation and dubbing workbench, released.
 - **2026-11-03:** Training code released.

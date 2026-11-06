@@ -13,6 +13,7 @@
   <a href="https://arxiv.org/abs/2611.03404"><img src="https://img.shields.io/badge/arXiv-2611.03404-b31b1b?style=flat-square&logo=arxiv&logoColor=white" alt="arXiv paper"></a>
   <a href="https://law1223.github.io/viddub-project-page/"><img src="https://img.shields.io/badge/Project-Page-0f766e?style=flat-square" alt="Project page"></a>
   <a href="https://github.com/LAW1223/VidDub"><img src="https://img.shields.io/badge/GitHub-Code-181717?style=flat-square&logo=github" alt="GitHub code"></a>
+  <a href="https://huggingface.co/spaces/hugging-apps/viddub-2611"><img src="https://img.shields.io/badge/🤗%20Demo-Try%20VidDub-ffd21e?style=flat-square" alt="VidDub community demo"></a>
   <a href="https://github.com/LAW1223/OpenDub"><img src="https://img.shields.io/badge/App-OpenDub-2563EB?style=flat-square&logo=github" alt="OpenDub application"></a>
   <a href="https://huggingface.co/AIPeanutman/VidDub"><img src="https://img.shields.io/badge/🤗%20Model-VidDub-ffd21e?style=flat-square" alt="Model weights"></a>
   <a href="https://huggingface.co/datasets/AIPeanutman/VidDub-Bench"><img src="https://img.shields.io/badge/🤗%20Benchmark-VidDub--Bench-ffd21e?style=flat-square" alt="VidDub-Bench"></a>
@@ -90,6 +91,9 @@ The frozen inputs and pairings are released as
 
 ## News
 
+- **2026-11-06:** A [VidDub community demo](https://huggingface.co/spaces/hugging-apps/viddub-2611)
+  is live on Hugging Face Spaces. Thanks to **Apolinario, from the open-source
+  team at Hugging Face**, for creating and hosting it.
 - **2026-11-06:** [OpenDub](https://github.com/LAW1223/OpenDub), a browser-based
   end-to-end video translation and dubbing workbench, released.
 - **2026-11-03:** Training code released.
