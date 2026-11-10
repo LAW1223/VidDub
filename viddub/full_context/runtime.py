@@ -210,7 +210,13 @@ def write_mp4(path, frames, audio=None, fps=FPS):
         tmp_wav = str(path) + ".wav"
         soundfile.write(tmp_wav, audio, SR)
         # 48k stereo: 16k mono AAC plays silent in many embedded players
-        cmd += ["-i", tmp_wav, "-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest"]
+        # Pad resampled AAC to the video duration before -shortest. Without
+        # apad, fractional/native frame rates can make audio end a fraction
+        # early and FFmpeg silently drops the final video frame.
+        cmd += [
+            "-i", tmp_wav, "-af", "apad",
+            "-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest",
+        ]
     cmd += ["-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(path)]
     subprocess.run(cmd, input=np.ascontiguousarray(frames).tobytes(), check=True)
     if tmp_wav:

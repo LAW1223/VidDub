@@ -99,12 +99,14 @@ class ReleaseContractTests(unittest.TestCase):
     def test_paper_long_video_protocol_is_the_release_default(self):
         cli = (ROOT / "scripts/infer.py").read_text()
         inference = (ROOT / "viddub/full_context/inference.py").read_text()
+        runtime = (ROOT / "viddub/full_context/runtime.py").read_text()
         self.assertIn('"--mode", choices=("auto", "clip", "windowed")', cli)
         self.assertIn('"--overlap", type=int, default=17', cli)
         self.assertIn("PAPER_OVERLAP = 17", inference)
         self.assertIn("window_seed = seed + window_index", inference)
         self.assertIn("harmonize_lower_face(gen, crops, mask > 127)", inference)
         self.assertIn("crop_output[start:start + ov]", inference)
+        self.assertIn('"-af", "apad"', runtime)
 
     def test_exporter_defaults_to_final_model(self):
         source = (ROOT / "scripts/export_hf_models.py").read_text()

@@ -15,6 +15,7 @@
   <a href="https://github.com/LAW1223/VidDub"><img src="https://img.shields.io/badge/GitHub-Code-181717?style=flat-square&logo=github" alt="GitHub code"></a>
   <a href="https://huggingface.co/spaces/hugging-apps/viddub-2611"><img src="assets/badge-demo.svg" alt="VidDub community demo"></a>
   <a href="https://github.com/LAW1223/OpenDub"><img src="assets/badge-opendub.svg" alt="OpenDub application"></a>
+  <a href="https://github.com/LAW1223/ComfyUI-VidDub"><img src="https://img.shields.io/badge/ComfyUI-Custom%20Node-111827?style=flat-square" alt="ComfyUI-VidDub custom node"></a>
   <a href="https://huggingface.co/AIPeanutman/VidDub"><img src="https://img.shields.io/badge/🤗%20Model-VidDub-ffd21e?style=flat-square" alt="Model weights"></a>
   <a href="https://huggingface.co/datasets/AIPeanutman/VidDub-Bench"><img src="https://img.shields.io/badge/🤗%20Benchmark-VidDub--Bench-ffd21e?style=flat-square" alt="VidDub-Bench"></a>
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
@@ -25,6 +26,7 @@
 <p>
   <a href="#quick-start">Quick Start</a> ·
   <a href="#opendub-application">Application</a> ·
+  <a href="#comfyui-integration">ComfyUI</a> ·
   <a href="#how-it-works">Method</a> ·
   <a href="#model-release">Model</a> ·
   <a href="#training-and-reproduction">Training</a> ·
@@ -91,6 +93,9 @@ The frozen inputs and pairings are released as
 
 ## News
 
+- **2026-11-10:** [ComfyUI-VidDub](https://github.com/LAW1223/ComfyUI-VidDub),
+  the official ComfyUI custom node, released and validated end to end on
+  an NVIDIA H20 with the public two-step model.
 - **2026-11-06:** A [VidDub community demo](https://huggingface.co/spaces/hugging-apps/viddub-2611)
   is live on Hugging Face Spaces. Thanks to **Apolinario, from the open-source
   team at Hugging Face**, for creating and hosting it.
@@ -112,6 +117,15 @@ GPU memory for the Wan/VACE stack. The development environment used PyTorch
 git clone https://github.com/LAW1223/VidDub.git
 cd VidDub
 pip install -r requirements.txt
+```
+
+On a headless Linux server, if OpenCV fails to import because `libGL.so.1` is
+missing, replace the GUI-enabled wheel pulled in by `mediapipe`:
+
+```bash
+pip uninstall -y opencv-contrib-python opencv-python
+pip install --force-reinstall --no-deps \
+  opencv-contrib-python-headless==4.11.0.86
 ```
 
 ### 2. Download model weights
@@ -185,6 +199,19 @@ replace the [VidDub license](LICENSE) for a future or custom VidDub adapter.
 In particular, exposing VidDub inference to third parties through a hosted
 service, website, API, bot, or managed deployment requires separate written
 permission.
+
+## ComfyUI integration
+
+[ComfyUI-VidDub](https://github.com/LAW1223/ComfyUI-VidDub) is the official
+custom node for connecting ComfyUI's native `VIDEO` and `AUDIO` types to the
+released VidDub inference stack. It keeps VidDub in a separate Python
+environment so its PyTorch and Wan dependencies do not replace ComfyUI's.
+
+The full path has been validated on an NVIDIA H20 with current ComfyUI and the
+public `FULL2_DMD_R4@100` release: an 81-frame 1920×1080 source produced an
+81-frame dubbed MP4 and a native ComfyUI `VIDEO` output. Linux is supported;
+Windows users should run both ComfyUI and VidDub inside WSL2. Native Windows
+execution has not been validated.
 
 ## Model release
 
