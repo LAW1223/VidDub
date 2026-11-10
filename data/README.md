@@ -1,15 +1,16 @@
 # VidDub data contract
 
-The public dataset should be released as a separate artifact. This repository
-contains the generation pipeline and schema, but intentionally contains no
-unreviewed person video.
+The datasets are released as separate artifacts. This repository contains the
+generation pipeline and schema, but intentionally contains no unreviewed person
+video.
 
-The frozen paper-selected synthetic package is prepared for the Hugging Face
-repository `AIPeanutman/VidDub-Training-Data`; its public link will be enabled
-after the 211.2 GiB media upload and final integrity check complete. It contains
-45,221 original-resolution generated source videos and an authoritative
-85,435-window selection under CC BY-NC 4.0. Before processing a download,
-validate its manifests:
+The frozen paper-selected synthetic source package is public as
+[VidDub-Training-Data](https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Data).
+It contains 45,221 original-resolution generated source videos and an
+authoritative 85,435-window selection under CC BY-NC 4.0. The corresponding
+100.1 GB of materialized 81-frame media is available in 86 ZIP shards as
+[VidDub-Training-Clips](https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Clips).
+Before processing a source-package download, validate its manifests:
 
 ```bash
 python scripts/validate_training_dataset.py \

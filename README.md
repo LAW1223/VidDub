@@ -17,6 +17,8 @@
   <a href="https://github.com/LAW1223/OpenDub"><img src="assets/badge-opendub.svg" alt="OpenDub application"></a>
   <a href="https://github.com/LAW1223/ComfyUI-VidDub"><img src="https://img.shields.io/badge/ComfyUI-Custom%20Node-111827?style=flat-square" alt="ComfyUI-VidDub custom node"></a>
   <a href="https://huggingface.co/AIPeanutman/VidDub"><img src="https://img.shields.io/badge/🤗%20Model-VidDub-ffd21e?style=flat-square" alt="Model weights"></a>
+  <a href="https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Data"><img src="https://img.shields.io/badge/🤗%20Data-Source%20Videos-ffd21e?style=flat-square" alt="VidDub training source data"></a>
+  <a href="https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Clips"><img src="https://img.shields.io/badge/🤗%20Data-Training%20Clips-ffd21e?style=flat-square" alt="VidDub processed training clips"></a>
   <a href="https://huggingface.co/datasets/AIPeanutman/VidDub-Bench"><img src="https://img.shields.io/badge/🤗%20Benchmark-VidDub--Bench-ffd21e?style=flat-square" alt="VidDub-Bench"></a>
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/PyTorch-2.7-EE4C2C?style=flat-square&logo=pytorch&logoColor=white" alt="PyTorch 2.7">
@@ -29,6 +31,7 @@
   <a href="#comfyui-integration">ComfyUI</a> ·
   <a href="#how-it-works">Method</a> ·
   <a href="#model-release">Model</a> ·
+  <a href="#training-data">Data</a> ·
   <a href="#training-and-reproduction">Training</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="docs/BENCHMARK.md">Benchmark</a> ·
@@ -96,6 +99,9 @@ The frozen inputs and pairings are released as
 - **2026-11-10:** [ComfyUI-VidDub](https://github.com/LAW1223/ComfyUI-VidDub),
   the official ComfyUI custom node, released and validated end to end on
   an NVIDIA H20 with the public two-step model.
+- **2026-11-10:** The full paper-selected synthetic training release is public:
+  45,221 [source videos](https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Data)
+  and 85,435 [model-ready clips](https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Clips).
 - **2026-11-06:** A [VidDub community demo](https://huggingface.co/spaces/hugging-apps/viddub-2611)
   is live on Hugging Face Spaces. Thanks to **Apolinario, from the open-source
   team at Hugging Face**, for creating and hosting it.
@@ -255,6 +261,22 @@ python scripts/run_benchmark.py \
 
 See [docs/BENCHMARK.md](docs/BENCHMARK.md) for the manifest schema, smoke tests,
 resumable/partitioned execution, reporting protocol, and license.
+
+## Training data
+
+The frozen paper-selected synthetic training set is available in two forms:
+
+- [VidDub-Training-Data](https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Data):
+  45,221 original-resolution 1344×768 source videos plus the authoritative
+  85,435-window selection and preprocessing metadata (approximately 227 GB);
+- [VidDub-Training-Clips](https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Clips):
+  all 85,435 selected 81-frame 512×512 clips with aligned audio, lower-face
+  masks, and reference frames, packaged in 86 checksummed ZIP shards
+  (approximately 100.3 GB).
+
+Both packages contain synthetic identities, are disjoint from VidDub-Bench,
+and are released under CC BY-NC 4.0. Model-specific latent caches are not
+included. See [data/README.md](data/README.md) for the processing contract.
 
 ## Repository layout
 

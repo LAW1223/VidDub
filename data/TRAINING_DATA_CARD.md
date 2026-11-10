@@ -26,6 +26,7 @@ source videos plus the exact clip-level selection used in the paper.
 - [Project page](https://law1223.github.io/viddub-project-page/)
 - [Model weights](https://huggingface.co/AIPeanutman/VidDub)
 - [VidDub-Bench](https://huggingface.co/datasets/AIPeanutman/VidDub-Bench)
+- [Processed training clips](https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Clips)
 
 ## Dataset summary
 
