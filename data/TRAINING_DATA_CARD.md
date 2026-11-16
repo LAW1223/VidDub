@@ -135,7 +135,7 @@ Report correction, removal, or licensing requests through the
 
 ```bibtex
 @article{liu2026viddub,
-  title   = {VidDub: Replacement-Aware Distillation for Two-Step Video Dubbing},
+  title   = {VidDub: Replacement-Aware Supervision for Two-Step Video Dubbing},
   author  = {Liu, Yexin and Lin, Yunlong and Wang, Zehan and He, Guangxin and
              Xu, Xinli and Zha, Jiajun and Liu, Yaofu and Wang, Yueze and
              Ping, Bowen and Li, Yuanming and Wang, Amie and Ghanem, Bernard and

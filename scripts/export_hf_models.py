@@ -12,7 +12,7 @@ from safetensors.torch import load_file, save_file
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKPOINT_ROOT = REPO_ROOT / "weights" / "staged"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "export"
-PAPER_TITLE = "VidDub: Replacement-Aware Distillation for Two-Step Video Dubbing"
+PAPER_TITLE = "VidDub: Replacement-Aware Supervision for Two-Step Video Dubbing"
 PAPER_URL = "https://arxiv.org/abs/2611.03404"
 PROJECT_URL = "https://law1223.github.io/viddub-project-page/"
 DEMO_URL = "https://huggingface.co/spaces/hugging-apps/viddub-2611"

@@ -5,7 +5,7 @@ in this repository.
 
 ## Project identity
 
-- Paper: **VidDub: Replacement-Aware Distillation for Two-Step Video Dubbing**
+- Paper: **VidDub: Replacement-Aware Supervision for Two-Step Video Dubbing**
 - Paper URL: <https://arxiv.org/abs/2611.03404>
 - Code: <https://github.com/LAW1223/VidDub>
 - Project page: <https://law1223.github.io/viddub-project-page/>
