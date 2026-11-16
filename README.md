@@ -43,9 +43,9 @@
 </div>
 
 <p align="center">
-  <img src="assets/teaser.png" width="100%" alt="VidDub on captured, in-the-wild, generated, and long-form video">
+  <img src="assets/teaser.png" width="100%" alt="VidDub cross-language dubbing, multilingual synchronization, and throughput">
 </p>
-<p align="center"><sub>Audio-driven dubbing across captured, in-the-wild, generated, and 60-second long-form sources.</sub></p>
+<p align="center"><sub>Phone-aligned cross-language examples, multilingual synchronization, and end-to-end throughput.</sub></p>
 
 ## Overview
 
