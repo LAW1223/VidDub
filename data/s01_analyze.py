@@ -14,11 +14,13 @@ import time
 from pathlib import Path
 
 import cv2
-import decord
 import mediapipe as mp
 import numpy as np
 import python_speech_features
 import torch
+# Import decord after torch and mediapipe so decord's bundled VC++ runtime on
+# Windows does not shadow the newer runtime expected by mediapipe.
+import decord
 from scipy import signal
 from scipy.io import wavfile
 
@@ -45,28 +47,53 @@ def load_syncnet(device):
     return net
 
 
-def detect_landmarks(
-    frames,
+def detect_landmarks_iter(
+    frame_chunks,
+    num_frames,
+    height,
+    width,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5,
 ):
-    T, H, W = frames.shape[:3]
-    lm = np.full((T, 468, 2), np.nan, dtype=np.float32)
-    nfaces = np.zeros(T, dtype=np.int8)
+    lm = np.full((num_frames, 468, 2), np.nan, dtype=np.float32)
+    nfaces = np.zeros(num_frames, dtype=np.int8)
+    t = 0
     with mp.solutions.face_mesh.FaceMesh(
         static_image_mode=False,
         max_num_faces=2,
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
     ) as face_mesh:
-        for t in range(T):
-            res = face_mesh.process(frames[t])
-            if not res.multi_face_landmarks:
-                continue
-            nfaces[t] = len(res.multi_face_landmarks)
-            faces = [np.array([(p.x * W, p.y * H) for p in f.landmark[:468]]) for f in res.multi_face_landmarks]
-            lm[t] = max(faces, key=lambda a: np.ptp(a[:, 1]))  # largest face
+        for chunk in frame_chunks:
+            for frame in chunk:
+                res = face_mesh.process(frame)
+                if res.multi_face_landmarks:
+                    nfaces[t] = len(res.multi_face_landmarks)
+                    faces = [
+                        np.array([(p.x * width, p.y * height) for p in f.landmark[:468]])
+                        for f in res.multi_face_landmarks
+                    ]
+                    lm[t] = max(faces, key=lambda a: np.ptp(a[:, 1]))  # largest face
+                t += 1
+    if t != num_frames:
+        raise ValueError(f"Expected {num_frames} frames in landmark pass, got {t}")
     return lm, nfaces
+
+
+def detect_landmarks(
+    frames,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5,
+):
+    T, H, W = frames.shape[:3]
+    return detect_landmarks_iter(
+        (frames,),
+        T,
+        H,
+        W,
+        min_detection_confidence=min_detection_confidence,
+        min_tracking_confidence=min_tracking_confidence,
+    )
 
 
 def syncnet_crops(frames, lm, crop_scale=0.4):

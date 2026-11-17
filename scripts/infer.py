@@ -21,9 +21,9 @@ def import_runtime():
     global decord, librosa, np, torch, snapshot_download, load_file
     global CausalConfig, CausalWanDub, autocast, rollout, schedule
     global DubAudioAdapter, full_context_runtime, FPS, SR, ZeroLatents
-    global build_inputs, load_models, to_video_tensor, write_mp4, dub_video
+    global Mp4StreamWriter, build_inputs, load_models, to_video_tensor, write_mp4
+    global DecordFrameSource, dub_video, dub_video_stream
 
-    import decord
     import librosa
     import numpy as np
     import torch
@@ -34,11 +34,17 @@ def import_runtime():
     from viddub.causal.runtime import autocast
     from viddub.causal.sampling import rollout, schedule
     from viddub.full_context.audio import DubAudioAdapter
+    # Import inference/mediapipe/torch before decord so decord's bundled VC++
+    # runtime on Windows does not shadow the newer runtime expected by mediapipe.
+    from viddub.full_context.inference import (
+        DecordFrameSource, dub_video, dub_video_stream,
+    )
     from viddub.full_context import runtime as full_context_runtime
     from viddub.full_context.runtime import (
-        FPS, SR, ZeroLatents, build_inputs, load_models, to_video_tensor, write_mp4,
+        FPS, SR, Mp4StreamWriter, ZeroLatents, build_inputs, load_models,
+        to_video_tensor, write_mp4,
     )
-    from viddub.full_context.inference import dub_video
+    import decord
 
 
 def resolve_model(value, revision=None):
@@ -87,7 +93,7 @@ def load_release(model_dir, device):
                 "The released two-step path requires the paper-selected "
                 "full-context FULL2_DMD_R4 checkpoint")
     paths = component_paths(model_dir, config)
-    pipe, whisper = load_models(device)
+    pipe, whisper = load_models(device, include_text_encoder=False)
     pipe.dit.load_state_dict(load_file(str(paths["dit"]), device=str(device)), strict=True)
     pipe.vace.load_state_dict(load_file(str(paths["vace"]), device=str(device)), strict=True)
     adapter = DubAudioAdapter().to(device)
@@ -206,21 +212,47 @@ def infer_file(runtime, video, audio, output, seed=0, mode="auto", overlap=17,
     output = Path(output)
     reader = decord.VideoReader(video, num_threads=2)
     fps = float(reader.get_avg_fps())
-    frames = reader[:].asnumpy()
+    num_frames = len(reader)
     waveform = librosa.load(audio, sr=SR, mono=True)[0]
-    audio_samples = round(len(frames) / fps * SR)
+    audio_samples = round(num_frames / fps * SR)
     waveform = np.pad(
         waveform[:audio_samples],
         (0, max(0, audio_samples - len(waveform))),
     )
-    generated = dub_video(
-        runtime["models"], frames, waveform,
-        steps=runtime["steps"], audio_cfg=1.0, feather=feather, seed=seed,
-        fps=fps, overlap=overlap, mode=mode, harmonize=harmonize,
-        sample_fn=runtime["sample_fn"],
-    )
     output.parent.mkdir(parents=True, exist_ok=True)
-    write_mp4(output, generated, waveform, fps=fps)
+    if num_frames <= 162:
+        frames = reader[:].asnumpy()
+        generated = dub_video(
+            runtime["models"], frames, waveform,
+            steps=runtime["steps"], audio_cfg=1.0, feather=feather, seed=seed,
+            fps=fps, overlap=overlap, mode=mode, harmonize=harmonize,
+            sample_fn=runtime["sample_fn"],
+        )
+        write_mp4(output, generated, waveform, fps=fps)
+    else:
+        frame_source = DecordFrameSource(reader)
+        with Mp4StreamWriter(
+            output,
+            frame_source.width,
+            frame_source.height,
+            audio=waveform,
+            fps=fps,
+        ) as writer:
+            dub_video_stream(
+                runtime["models"],
+                frame_source,
+                waveform,
+                writer,
+                steps=runtime["steps"],
+                audio_cfg=1.0,
+                feather=feather,
+                seed=seed,
+                fps=fps,
+                overlap=overlap,
+                mode=mode,
+                harmonize=harmonize,
+                sample_fn=runtime["sample_fn"],
+            )
     return output
 
 

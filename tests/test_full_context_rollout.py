@@ -1,8 +1,14 @@
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
+import numpy as np
 import torch
 
 from viddub.causal.sampling import rollout, schedule
+from viddub.full_context import inference
+from viddub.full_context.runtime import Mp4StreamWriter, write_mp4
 
 
 class _FullContextConfig:
@@ -72,6 +78,123 @@ class FullContextRolloutTests(unittest.TestCase):
                 noise=torch.zeros_like(self.reference),
                 use_cache=True,
             )
+
+
+class _DummyFrameSource:
+    def __init__(self, frames, chunk_size=37):
+        self.frames = frames
+        self.chunk_size = chunk_size
+        self.num_frames, self.height, self.width = frames.shape[:3]
+
+    def iter_chunks(self):
+        for start in range(0, self.num_frames, self.chunk_size):
+            yield self.frames[start:start + self.chunk_size]
+
+    def get_frame(self, index):
+        return self.frames[int(index)]
+
+
+class _MemoryWriter:
+    def __init__(self):
+        self.chunks = []
+
+    def write(self, chunk):
+        self.chunks.append(chunk.copy())
+
+    def result(self):
+        return np.concatenate(self.chunks, axis=0)
+
+
+class StreamingInferenceEquivalenceTests(unittest.TestCase):
+    @staticmethod
+    def _synthetic_landmarks(num_frames, height, width, face_size):
+        lm = np.full((num_frames, 468, 2), np.nan, dtype=np.float32)
+        cx, cy = width / 2.0, height / 2.0
+        half = face_size / 2.0
+        lm[:, :, 0] = cx
+        lm[:, :, 1] = cy
+        lm[:, 234, 0] = cx - half
+        lm[:, 454, 0] = cx + half
+        lm[:, 10, 1] = cy - half
+        lm[:, 152, 1] = cy + half
+        lm[:, 2, 1] = cy - 0.1 * half
+        lm[:, 13, 1] = cy + 0.1 * half
+        lm[:, 14, 1] = cy + 0.25 * half
+        return lm, np.ones(num_frames, dtype=np.int8)
+
+    @staticmethod
+    def _fake_sampler(pipe, whisper, adapter, zero_latents, clip, audio,
+                      steps=2, audio_cfg=1.0, seed=0, fps=24):
+        frames = clip["frames"].copy()
+        offset = (seed % 5) + 1
+        frames[:, 180:360, 160:352] = np.clip(
+            frames[:, 180:360, 160:352].astype(np.int16) + offset * 7, 0, 255
+        ).astype(np.uint8)
+        return frames
+
+    def test_streaming_matches_in_memory_dub_video(self):
+        rng = np.random.default_rng(1234)
+        for num_frames, face_size, harmonize, window_box, overlap, use_sample_fn in (
+            (150, 160.0, True, False, 17, True),
+            (220, 420.0, False, False, 17, True),
+            (150, 160.0, True, True, 0, False),
+        ):
+            frames = rng.integers(30, 220, size=(num_frames, 320, 320, 3), dtype=np.uint8)
+            audio = np.zeros(int(num_frames / 24.0 * 16000), dtype=np.float32)
+            lm, nfaces = self._synthetic_landmarks(num_frames, 320, 320, face_size)
+            models = (None, None, None, None)
+
+            with mock.patch.object(
+                inference, "detect_landmarks", return_value=(lm.copy(), nfaces.copy())
+            ), mock.patch.object(
+                inference, "detect_landmarks_iter", return_value=(lm.copy(), nfaces.copy())
+            ), mock.patch.object(
+                inference, "sample", side_effect=self._fake_sampler
+            ):
+                sample_fn = self._fake_sampler if use_sample_fn else None
+                expected = inference.dub_video(
+                    models,
+                    frames,
+                    audio,
+                    steps=2,
+                    seed=7,
+                    window_box=window_box,
+                    overlap=overlap,
+                    harmonize=harmonize,
+                    log=lambda *_: None,
+                    sample_fn=sample_fn,
+                )
+                writer = _MemoryWriter()
+                written = inference.dub_video_stream(
+                    models,
+                    _DummyFrameSource(frames),
+                    audio,
+                    writer,
+                    steps=2,
+                    seed=7,
+                    window_box=window_box,
+                    overlap=overlap,
+                    harmonize=harmonize,
+                    log=lambda *_: None,
+                    sample_fn=sample_fn,
+                )
+            self.assertEqual(written, num_frames)
+            self.assertTrue(np.array_equal(expected, writer.result()))
+
+    def test_mp4_stream_writer_produces_decodable_video(self):
+        import decord
+
+        frames = np.full((12, 64, 64, 3), 120, dtype=np.uint8)
+        audio = np.zeros(8000, dtype=np.float32)
+        with tempfile.TemporaryDirectory() as tmp:
+            stream_path = Path(tmp) / "stream.mp4"
+            batch_path = Path(tmp) / "batch.mp4"
+            with Mp4StreamWriter(stream_path, 64, 64, audio=audio, fps=24) as writer:
+                writer.write(frames[:5])
+                writer.write(frames[5:])
+            write_mp4(batch_path, frames, audio=audio, fps=24)
+            self.assertEqual(len(decord.VideoReader(str(stream_path))), 12)
+            self.assertEqual(len(decord.VideoReader(str(batch_path))), 12)
 
 
 if __name__ == "__main__":

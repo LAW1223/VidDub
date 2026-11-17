@@ -1,15 +1,18 @@
 """Shared pieces for Wan-Dub training / validation / inference."""
+import gc
 import hashlib
 import json
 import os
 import subprocess
 from pathlib import Path
 
-import decord
 import imageio_ffmpeg
 import numpy as np
 import soundfile
 import torch
+# Import decord after torch so its bundled VC++ runtime on Windows does not
+# conflict with torch/mediapipe DLL initialization.
+import decord
 from einops import rearrange
 from PIL import Image
 
@@ -84,16 +87,53 @@ class CachedClipDataset(torch.utils.data.Dataset):
                 "audio": audio[:round(self.num_frames / FPS * SR)], "clip_id": self.rows[i]["clip_id"]}
 
 
-def load_models(device):
-    pipe = WanVideoPipeline.from_pretrained(
-        torch_dtype=torch.bfloat16, device=device,
-        model_configs=[ModelConfig(path=str(VACE_DIR / "diffusion_pytorch_model.safetensors")),
-                       ModelConfig(path=str(VACE_DIR / "models_t5_umt5-xxl-enc-bf16.pth")),
-                       ModelConfig(path=str(VACE_DIR / "Wan2.1_VAE.pth"))],
-        tokenizer_config=ModelConfig(path=str(VACE_DIR / "google/umt5-xxl")),
+@torch.no_grad()
+def encode_empty_text_context(device, torch_dtype=torch.bfloat16):
+    """Encode the empty prompt once and release umt5-xxl before loading DiT/VACE/VAE."""
+    from viddub.foundation.models.wan_video_text_encoder import HuggingfaceTokenizer, WanTextEncoder
+    from viddub.foundation.pipelines.wan_video import _load_assign, _load_torch
+
+    torch_device = torch.device(device)
+    text_pipe = WanVideoPipeline(device=torch_device, torch_dtype=torch_dtype)
+    with torch.device("meta"):
+        text_pipe.text_encoder = WanTextEncoder()
+    _load_assign(text_pipe.text_encoder, _load_torch(VACE_DIR / "models_t5_umt5-xxl-enc-bf16.pth"))
+    text_pipe.text_encoder.requires_grad_(False).eval()
+    text_pipe.tokenizer = HuggingfaceTokenizer(
+        str(VACE_DIR / "google/umt5-xxl"), seq_len=TEXT_LEN, clean="whitespace"
     )
-    for m in (pipe.text_encoder, pipe.dit, pipe.vace, pipe.vae):
+    text_pipe.to(device=torch_device, dtype=torch_dtype)
+    empty_context = encode_text(text_pipe, "").detach().cpu()
+    del text_pipe
+    gc.collect()
+    if torch_device.type == "cuda":
+        torch.cuda.empty_cache()
+    return empty_context
+
+
+def load_models(device, include_text_encoder=True):
+    empty_context = None if include_text_encoder else encode_empty_text_context(device)
+    configs = [
+        ModelConfig(path=str(VACE_DIR / "diffusion_pytorch_model.safetensors")),
+        ModelConfig(path=str(VACE_DIR / "Wan2.1_VAE.pth")),
+    ]
+    tokenizer_config = None
+    if include_text_encoder:
+        configs.insert(1, ModelConfig(path=str(VACE_DIR / "models_t5_umt5-xxl-enc-bf16.pth")))
+        tokenizer_config = ModelConfig(path=str(VACE_DIR / "google/umt5-xxl"))
+    pipe = WanVideoPipeline.from_pretrained(
+        torch_dtype=torch.bfloat16,
+        device=device,
+        model_configs=configs,
+        tokenizer_config=tokenizer_config,
+    )
+    modules = [pipe.dit, pipe.vace, pipe.vae]
+    if pipe.text_encoder is not None:
+        modules.append(pipe.text_encoder)
+    for m in modules:
         m.requires_grad_(False).eval()
+    if empty_context is not None:
+        pipe._wan_dub_empty_context = empty_context
     whisper = WhisperFeatures(str(WEIGHTS / "whisper-small")).to(device, torch.bfloat16)
     return pipe, whisper
 
@@ -200,27 +240,70 @@ def sample(pipe, whisper, adapter, zero_latents, clip, audio, steps=30, audio_cf
     return ((video[0].permute(1, 2, 3, 0).float().clamp(-1, 1) + 1) * 127.5).round().byte().cpu().numpy()
 
 
-def write_mp4(path, frames, audio=None, fps=FPS):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    h, w = frames.shape[1:3]
-    cmd = [imageio_ffmpeg.get_ffmpeg_exe(), "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
-           "-r", str(fps), "-i", "-"]
-    tmp_wav = None
-    if audio is not None:
-        tmp_wav = str(path) + ".wav"
-        soundfile.write(tmp_wav, audio, SR)
-        # 48k stereo: 16k mono AAC plays silent in many embedded players
-        # Pad resampled AAC to the video duration before -shortest. Without
-        # apad, fractional/native frame rates can make audio end a fraction
-        # early and FFmpeg silently drops the final video frame.
-        cmd += [
-            "-i", tmp_wav, "-af", "apad",
-            "-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest",
+class Mp4StreamWriter:
+    """Stream uint8 [T,H,W,3] RGB frames to an H.264 MP4 without full-video buffering."""
+
+    def __init__(self, path, width, height, audio=None, fps=FPS):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.tmp_wav = None
+        cmd = [
+            imageio_ffmpeg.get_ffmpeg_exe(), "-loglevel", "error", "-y",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
+            "-r", str(fps), "-i", "-",
         ]
-    cmd += ["-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(path)]
-    subprocess.run(cmd, input=np.ascontiguousarray(frames).tobytes(), check=True)
-    if tmp_wav:
-        Path(tmp_wav).unlink()
+        if audio is not None:
+            self.tmp_wav = str(self.path) + ".wav"
+            soundfile.write(self.tmp_wav, audio, SR)
+            # 48k stereo: 16k mono AAC plays silent in many embedded players
+            # Pad resampled AAC to the video duration before -shortest. Without
+            # apad, fractional/native frame rates can make audio end a fraction
+            # early and FFmpeg silently drops the final video frame.
+            cmd += [
+                "-i", self.tmp_wav, "-af", "apad",
+                "-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest",
+            ]
+        cmd += [
+            "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", str(self.path),
+        ]
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+
+    def write(self, frames):
+        self.proc.stdin.write(np.ascontiguousarray(frames).tobytes())
+
+    def close(self):
+        try:
+            if self.proc.stdin is not None and not self.proc.stdin.closed:
+                self.proc.stdin.close()
+            returncode = self.proc.wait()
+            if returncode != 0:
+                raise subprocess.CalledProcessError(returncode, self.proc.args)
+        finally:
+            if self.tmp_wav and Path(self.tmp_wav).exists():
+                Path(self.tmp_wav).unlink()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            try:
+                if self.proc.stdin is not None and not self.proc.stdin.closed:
+                    self.proc.stdin.close()
+            finally:
+                self.proc.wait()
+                if self.tmp_wav and Path(self.tmp_wav).exists():
+                    Path(self.tmp_wav).unlink()
+            return False
+        self.close()
+        return False
+
+
+def write_mp4(path, frames, audio=None, fps=FPS):
+    h, w = frames.shape[1:3]
+    with Mp4StreamWriter(path, w, h, audio=audio, fps=fps) as writer:
+        writer.write(frames)
 
 
 def syncnet_scorer(device):

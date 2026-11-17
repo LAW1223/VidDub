@@ -6,21 +6,24 @@ serialized release config, DMD sampler, native timing, and overlap contract are
 validated together.
 """
 import argparse
+from collections import deque
 from pathlib import Path
 
 import cv2
-import decord
 import librosa
 import numpy as np
 import torch
 from safetensors.torch import load_file
 
+from data.s01_analyze import detect_landmarks, detect_landmarks_iter  # noqa: E402
+from data.s02_make_clips import CROP_SCALE, LM_LIP_LOW, LM_LIP_UP, NUM_FRAMES, SIZE, crop_box, lower_face_mask  # noqa: E402
+# Import decord after torch and mediapipe so decord's bundled VC++ runtime on
+# Windows does not shadow the newer runtime expected by mediapipe.
+import decord  # noqa: E402
+
 from .audio import DubAudioAdapter
 from .color_harmonization import harmonize_lower_face
 from .runtime import FPS, PROJECT, SR, ZeroLatents, load_models, sample, write_mp4
-
-from data.s01_analyze import detect_landmarks  # noqa: E402
-from data.s02_make_clips import CROP_SCALE, LM_LIP_LOW, LM_LIP_UP, NUM_FRAMES, SIZE, crop_box, lower_face_mask  # noqa: E402
 
 
 PAPER_OVERLAP = 17
@@ -54,7 +57,7 @@ def paste_back(frame, gen, box, alpha):
 
 
 def load_dub_models(adapter_path, dit_path=None, vace_path=None, device=torch.device("cuda")):
-    pipe, whisper = load_models(device)
+    pipe, whisper = load_models(device, include_text_encoder=False)
     if dit_path:
         pipe.dit.load_state_dict(load_file(dit_path))
     if vace_path:
@@ -210,6 +213,220 @@ def dub_video(
             out[index] = paste_back(
                 frames_p[index], generated, box, paste_alpha)
     return out[:, pad:pad + H, pad:pad + W]
+
+
+class DecordFrameSource:
+    """Sequential chunked reader over decord.VideoReader for bounded-RAM dubbing."""
+
+    def __init__(self, reader, chunk_size=64):
+        self.reader = reader
+        self.chunk_size = int(chunk_size)
+        self.num_frames = len(reader)
+        if self.num_frames <= 0:
+            raise ValueError("video contains zero frames")
+        first = reader[0].asnumpy()
+        self.height, self.width = first.shape[:2]
+
+    def iter_chunks(self):
+        for start in range(0, self.num_frames, self.chunk_size):
+            end = min(self.num_frames, start + self.chunk_size)
+            yield self.reader.get_batch(list(range(start, end))).asnumpy()
+
+    def get_frame(self, index):
+        return self.reader[int(index)].asnumpy()
+
+
+def dub_video_stream(
+    models,
+    frame_source,
+    audio,
+    writer,
+    prompt="",
+    steps=30,
+    audio_cfg=1.0,
+    feather=15,
+    seed=0,
+    window_box=False,
+    fps=FPS,
+    stretch=False,
+    overlap=PAPER_OVERLAP,
+    mode="auto",
+    harmonize=True,
+    log=print,
+    sample_fn=None,
+):
+    """Bounded-RAM streaming equivalent of ``dub_video`` for long videos."""
+    pipe, whisper, adapter, zero_latents = models
+    n, H, W = frame_source.num_frames, frame_source.height, frame_source.width
+    if mode not in {"auto", "clip", "windowed"}:
+        raise ValueError(f"unknown inference mode: {mode}")
+    mode = "clip" if mode == "auto" and n == NUM_FRAMES else (
+        "windowed" if mode == "auto" else mode)
+    if mode == "clip" and n != NUM_FRAMES:
+        raise ValueError(
+            f"clip mode requires exactly {NUM_FRAMES} frames; got {n}")
+    if window_box and mode == "windowed" and overlap:
+        raise ValueError("overlap blending requires one stable full-video crop")
+    starts = [0] if mode == "clip" else windows(
+        n, overlap, require_stride_multiple=sample_fn is not None)
+    audio = np.pad(audio, (0, max(0, int(n / fps * SR) - len(audio))))
+    if stretch and fps != FPS:
+        audio = librosa.effects.time_stretch(audio, rate=FPS / fps)
+    t_fps = FPS if stretch else fps
+
+    lm, _ = detect_landmarks_iter(frame_source.iter_chunks(), n, H, W)
+    if not np.isfinite(lm).any():
+        lm, _ = detect_landmarks_iter(
+            frame_source.iter_chunks(),
+            n,
+            H,
+            W,
+            min_detection_confidence=0.05,
+            min_tracking_confidence=0.1,
+        )
+        if not np.isfinite(lm).any():
+            raise RuntimeError("no face landmarks detected in any frame")
+        log(
+            "default face detector missed all frames; "
+            "using low-confidence FaceMesh fallback"
+        )
+    face = np.nanmedian(np.maximum(np.ptp(lm[:, :, 0], 1), np.ptp(lm[:, :, 1], 1)))
+    if not np.isfinite(face):
+        raise RuntimeError("face landmark extent is not finite")
+    pad = max(0, int(np.ceil((face * CROP_SCALE - min(H, W)) / 2)) + 1)
+    if pad > 1:
+        lm = lm + pad
+    else:
+        pad = 0
+    ref_idx = int(np.nanargmax(lm[:, LM_LIP_LOW, 1] - lm[:, LM_LIP_UP, 1]))
+    ref_raw = frame_source.get_frame(ref_idx)
+    ref_padded = (
+        np.pad(ref_raw, ((pad, pad), (pad, pad), (0, 0)), mode="edge")
+        if pad > 1 else ref_raw
+    )
+
+    def region(lm_w):
+        box = crop_box(lm_w, H + 2 * pad, W + 2 * pad)
+        mask = lower_face_mask(lm_w, box)
+        return box, mask, cv2.GaussianBlur(mask, (0, 0), feather).astype(np.float32) / 255
+
+    def crop(f, box):
+        x0, y0, side = box
+        return cv2.resize(f[y0:y0 + side, x0:x0 + side], (SIZE, SIZE), interpolation=cv2.INTER_AREA)
+
+    if not window_box:
+        box, mask, alpha = region(lm)
+        ref_crop = crop(ref_padded, box)
+        paste_alpha = (mask > 127).astype(np.float32) if harmonize else alpha
+
+    chunk_iter = iter(frame_source.iter_chunks())
+    src_buf = deque()
+    crop_buf = []
+    pasted_buf = []
+    buf_start = 0
+    src_end = 0
+    written = 0
+
+    def ensure_src(target_end):
+        nonlocal src_end
+        while src_end < target_end:
+            chunk = next(chunk_iter)
+            if pad > 1:
+                chunk = np.pad(
+                    chunk, ((0, 0), (pad, pad), (pad, pad), (0, 0)), mode="edge"
+                )
+            for frame in chunk:
+                src_buf.append(frame)
+            src_end += len(chunk)
+
+    for window_index, start in enumerate(starts):
+        end = start + NUM_FRAMES
+        ensure_src(end)
+        window_frames = [src_buf[idx - buf_start] for idx in range(start, end)]
+        if window_box:
+            box, mask, alpha = region(lm[start:end])
+            ref_crop = crop(ref_padded, box)
+            paste_alpha = (mask > 127).astype(np.float32) if harmonize else alpha
+        crops = np.stack([crop(f, box) for f in window_frames])
+        clip = {
+            "frames": crops,
+            "mask": mask > 127,
+            "ref": ref_crop,
+            "prompt": prompt,
+        }
+        sample_start = round(start / t_fps * SR)
+        sample_count = round(NUM_FRAMES / t_fps * SR)
+        a = audio[sample_start:sample_start + sample_count]
+        a = np.pad(a, (0, max(0, sample_count - len(a))))
+        sampler = sample if sample_fn is None else sample_fn
+        window_seed = seed + window_index
+        gen = sampler(
+            pipe, whisper, adapter, zero_latents, clip, a,
+            steps=steps, audio_cfg=audio_cfg, seed=window_seed, fps=t_fps)
+        color_report = None
+        if harmonize:
+            gen, color_report = harmonize_lower_face(gen, crops, mask > 127)
+        if window_box:
+            for offset, g in enumerate(gen):
+                buf_offset = start - buf_start + offset
+                pasted = paste_back(src_buf[start - buf_start + offset], g, box, paste_alpha)
+                if buf_offset < len(pasted_buf):
+                    pasted_buf[buf_offset] = pasted
+                else:
+                    pasted_buf.append(pasted)
+            written = max(written, end)
+        else:
+            ov = max(0, written - start)
+            if ov:
+                weight = (
+                    np.arange(1, ov + 1, dtype=np.float32) / (ov + 1)
+                )[:, None, None, None]
+                tail_start = start - buf_start
+                existing = np.stack(crop_buf[tail_start:tail_start + ov])
+                blended = np.rint(
+                    existing.astype(np.float32) * (1 - weight)
+                    + gen[:ov].astype(np.float32) * weight
+                ).astype(np.uint8)
+                for offset, blended_frame in enumerate(blended):
+                    crop_buf[tail_start + offset] = blended_frame
+            crop_buf.extend(gen[ov:])
+            written = max(written, end)
+        detail = ""
+        if color_report is not None:
+            detail = (
+                f", chroma MAE {color_report['interior_chroma_mae_before']:.3f}"
+                f"->{color_report['interior_chroma_mae_after']:.3f}"
+            )
+        log(
+            f"window {window_index}: {start}-{start + NUM_FRAMES}, "
+            f"seed {window_seed}{detail}")
+
+        finalize_until = (
+            starts[window_index + 1] if window_index + 1 < len(starts) else n
+        )
+        count = finalize_until - buf_start
+        if count > 0:
+            out_chunk = np.empty((count, H, W, 3), dtype=np.uint8)
+            for offset in range(count):
+                if window_box:
+                    pasted = pasted_buf[offset]
+                else:
+                    pasted = paste_back(
+                        src_buf[offset], crop_buf[offset], box, paste_alpha
+                    )
+                out_chunk[offset] = pasted[pad:pad + H, pad:pad + W]
+            writer.write(out_chunk)
+            for _ in range(count):
+                src_buf.popleft()
+            if window_box:
+                del pasted_buf[:count]
+            else:
+                del crop_buf[:count]
+            buf_start = finalize_until
+
+    if written != n:
+        raise RuntimeError(f"window merge wrote {written} frames, expected {n}")
+    return written
 
 
 def main():

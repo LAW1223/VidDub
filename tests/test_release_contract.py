@@ -86,6 +86,25 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn('config.get("causal") is not False', source)
         self.assertIn('"FULL2_DMD_R4"', source)
         self.assertIn('"google/umt5-xxl"', source)
+        self.assertIn("load_models(device, include_text_encoder=False)", source)
+
+    def test_decord_is_imported_after_torch_and_mediapipe(self):
+        for relative, anchor in (
+            ("data/s01_analyze.py", "import mediapipe"),
+            ("viddub/full_context/runtime.py", "import torch"),
+            ("viddub/full_context/inference.py", "from data.s01_analyze import"),
+            ("scripts/infer.py", "from viddub.full_context.inference import"),
+        ):
+            source = (ROOT / relative).read_text()
+            decord_pos = source.find("import decord")
+            anchor_pos = source.find(anchor)
+            self.assertNotEqual(decord_pos, -1, relative)
+            self.assertNotEqual(anchor_pos, -1, relative)
+            self.assertLess(
+                anchor_pos,
+                decord_pos,
+                f"{relative}: {anchor!r} must precede 'import decord' for Windows DLL safety",
+            )
 
     def test_full_video_inference_has_landmark_fallback(self):
         detector = (ROOT / "data/s01_analyze.py").read_text()

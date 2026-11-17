@@ -113,9 +113,11 @@ The frozen inputs and pairings are released as
 
 ## Quick start
 
-Requirements: Linux, Python 3.10+, FFmpeg, an NVIDIA CUDA GPU, and sufficient
-GPU memory for the Wan/VACE stack. The development environment used PyTorch
-2.7.1.
+Requirements: Linux (or native Windows 10/11 / WSL2, community-tested on an RTX
+A4500 20 GB with PyTorch 2.7.1+cu126), Python 3.10+, FFmpeg, an NVIDIA CUDA
+GPU (16–20 GB+ VRAM for inference; `umt5-xxl` is released immediately after
+encoding the empty prompt once), and `flash-attn` is optional (PyTorch
+attention fallback works).
 
 ### 1. Install
 
@@ -125,8 +127,9 @@ cd VidDub
 pip install -r requirements.txt
 ```
 
-On a headless Linux server, if OpenCV fails to import because `libGL.so.1` is
-missing, replace the GUI-enabled wheel pulled in by `mediapipe`:
+On headless Linux servers (missing `libGL.so.1`) or Windows environments where
+`mediapipe` pulls in `opencv-contrib-python` alongside
+`opencv-contrib-python-headless`, replace the GUI-enabled wheel:
 
 ```bash
 pip uninstall -y opencv-contrib-python opencv-python
@@ -181,9 +184,11 @@ python scripts/infer.py \
   --mode windowed
 ```
 
-The source should contain a detectable, mostly front-facing face and be at
-least 81 frames long. Audio is resampled to 16 kHz. The output keeps the source
-frame rate and resolution. The reported Long-20 setting uses 25 FPS inputs;
+The source should contain a single detectable, mostly front-facing face and be at
+least 81 frames long (in multi-person scenes, the largest face per frame is
+selected). Audio is resampled to 16 kHz. The output keeps the source
+frame rate and resolution, and long videos (>162 frames) stream sequentially
+through FFmpeg instead of buffering the full video in RAM. The reported Long-20 setting uses 25 FPS inputs;
 other frame rates retain their native frame timing and are not the exact
 Long-20 benchmark protocol. Color harmonization is enabled by default and can
 be disabled for ablation with `--no-color-harmonization`.
@@ -215,9 +220,9 @@ environment so its PyTorch and Wan dependencies do not replace ComfyUI's.
 
 The full path has been validated on an NVIDIA H20 with current ComfyUI and the
 public `FULL2_DMD_R4@100` release: an 81-frame 1920×1080 source produced an
-81-frame dubbed MP4 and a native ComfyUI `VIDEO` output. Linux is supported;
-Windows users should run both ComfyUI and VidDub inside WSL2. Native Windows
-execution has not been validated.
+81-frame dubbed MP4 and a native ComfyUI `VIDEO` output. Linux and WSL2 are
+supported; native Windows 10 (Python 3.11, PyTorch 2.7.1+cu126, RTX A4500
+20 GB) has also been community-validated.
 
 ## Model release
 
