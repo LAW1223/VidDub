@@ -43,9 +43,9 @@
 </div>
 
 <p align="center">
-  <img src="assets/teaser.png" width="100%" alt="VidDub cross-language dubbing, multilingual synchronization, and throughput">
+  <img src="assets/teaser.png" width="100%" alt="VidDub phone-aligned lip shapes, multilingual synchronization, and diffusion-editor throughput">
 </p>
-<p align="center"><sub>Phone-aligned cross-language examples, multilingual synchronization, and end-to-end throughput.</sub></p>
+<p align="center"><sub>Phone-aligned lip shapes under replacement speech, multilingual Sync-C across 15 language groups, and end-to-end diffusion-editor throughput on one H20.</sub></p>
 
 ## Overview
 
