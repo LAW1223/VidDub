@@ -181,6 +181,93 @@ class StreamingInferenceEquivalenceTests(unittest.TestCase):
             self.assertEqual(written, num_frames)
             self.assertTrue(np.array_equal(expected, writer.result()))
 
+    def test_missing_face_frames_pass_through_and_all_empty_window_is_skipped(self):
+        rng = np.random.default_rng(42)
+        num_frames = 170
+        frames = rng.integers(30, 220, size=(num_frames, 320, 320, 3), dtype=np.uint8)
+        audio = np.zeros(int(num_frames / 24.0 * 16000), dtype=np.float32)
+        lm, nfaces = self._synthetic_landmarks(num_frames, 320, 320, 160.0)
+        # Frames 0..84 are B-roll (no face), so window 0 (0..81) has no face at all.
+        # Frame 120 has a 1-frame detector blink that should be bridged.
+        lm[:85] = np.nan
+        nfaces[:85] = 0
+        lm[120] = np.nan
+        nfaces[120] = 0
+        models = (None, None, None, None)
+
+        for window_box, overlap, use_sample_fn in (
+            (False, 17, True),
+            (True, 0, False),
+        ):
+            calls = []
+
+            def tracking_sampler(*args, **kwargs):
+                calls.append(kwargs.get("seed"))
+                return self._fake_sampler(*args, **kwargs)
+
+            with mock.patch.object(
+                inference, "detect_landmarks", return_value=(lm.copy(), nfaces.copy())
+            ), mock.patch.object(
+                inference, "detect_landmarks_iter", return_value=(lm.copy(), nfaces.copy())
+            ), mock.patch.object(
+                inference, "sample", side_effect=tracking_sampler
+            ):
+                sample_fn = tracking_sampler if use_sample_fn else None
+                expected = inference.dub_video(
+                    models,
+                    frames,
+                    audio,
+                    steps=2,
+                    seed=10,
+                    window_box=window_box,
+                    overlap=overlap,
+                    harmonize=True,
+                    log=lambda *_: None,
+                    sample_fn=sample_fn,
+                )
+                in_mem_calls = len(calls)
+                calls.clear()
+                writer = _MemoryWriter()
+                written = inference.dub_video_stream(
+                    models,
+                    _DummyFrameSource(frames),
+                    audio,
+                    writer,
+                    steps=2,
+                    seed=10,
+                    window_box=window_box,
+                    overlap=overlap,
+                    harmonize=True,
+                    log=lambda *_: None,
+                    sample_fn=sample_fn,
+                )
+
+            self.assertEqual(written, num_frames)
+            self.assertTrue(np.array_equal(expected, writer.result()))
+            # Window 0 (0..81) has zero face frames and must be skipped.
+            self.assertEqual(in_mem_calls, 2)
+            self.assertEqual(len(calls), 2)
+            # B-roll frames (0..84) remain pixel-identical to source.
+            self.assertTrue(np.array_equal(expected[:85], frames[:85]))
+            # Bridged 1-frame drop (frame 120) still gets dubbed.
+            self.assertFalse(np.array_equal(expected[120], frames[120]))
+
+    def test_no_face_error_includes_size_hint(self):
+        frames = np.zeros((81, 128, 128, 3), dtype=np.uint8)
+        audio = np.zeros(int(81 / 24.0 * 16000), dtype=np.float32)
+        empty_lm = np.full((81, 468, 2), np.nan, dtype=np.float32)
+        empty_nf = np.zeros(81, dtype=np.int8)
+        with mock.patch.object(
+            inference, "detect_landmarks", return_value=(empty_lm, empty_nf)
+        ):
+            with self.assertRaisesRegex(RuntimeError, "too small"):
+                inference.dub_video(
+                    (None, None, None, None),
+                    frames,
+                    audio,
+                    log=lambda *_: None,
+                )
+
     def test_mp4_stream_writer_produces_decodable_video(self):
         import decord
 

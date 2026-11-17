@@ -27,6 +27,22 @@ from .runtime import FPS, PROJECT, SR, ZeroLatents, load_models, sample, write_m
 
 
 PAPER_OVERLAP = 17
+_NO_FACE_ERROR = (
+    "no face landmarks detected in any frame "
+    "(the face may be too small, too far, occluded, or off-axis; "
+    "MediaPipe typically requires a mostly front-facing face ~60+ px tall)"
+)
+
+
+def _face_paste_mask(lm, max_gap=2):
+    """True on frames that should receive mouth paste-back; bridges tiny 1-2 frame drops."""
+    valid = np.isfinite(lm).all(axis=(1, 2)).copy()
+    idx = np.flatnonzero(valid)
+    if len(idx) >= 2:
+        for prev, curr in zip(idx[:-1], idx[1:]):
+            if 1 < curr - prev <= max_gap + 1:
+                valid[prev + 1:curr] = True
+    return valid
 
 
 def windows(n_frames, overlap=PAPER_OVERLAP, require_stride_multiple=False):
@@ -122,11 +138,12 @@ def dub_video(
             min_tracking_confidence=0.1,
         )
         if not np.isfinite(lm).any():
-            raise RuntimeError("no face landmarks detected in any frame")
+            raise RuntimeError(_NO_FACE_ERROR)
         log(
             "default face detector missed all frames; "
             "using low-confidence FaceMesh fallback"
         )
+    paste_frame = _face_paste_mask(lm)
     # Tight shots (face*CROP_SCALE > frame): edge-pad so the face/crop ratio matches training.
     face = np.nanmedian(np.maximum(np.ptp(lm[:, :, 0], 1), np.ptp(lm[:, :, 1], 1)))
     if not np.isfinite(face):
@@ -157,46 +174,54 @@ def dub_video(
         source_crops = np.stack([crop(f, box) for f in frames_p])
         crop_output = np.empty_like(source_crops)
     for window_index, start in enumerate(starts):
-        if window_box:
-            box, mask, alpha = region(lm[start:start + NUM_FRAMES])
-            crops = np.stack([
-                crop(f, box) for f in frames_p[start:start + NUM_FRAMES]
-            ])
-        else:
-            crops = source_crops[start:start + NUM_FRAMES]
-        clip = {"frames": crops, "mask": mask > 127, "ref": crop(frames_p[ref_idx], box), "prompt": prompt}
-        sample_start = round(start / t_fps * SR)
-        sample_count = round(NUM_FRAMES / t_fps * SR)
-        a = audio[sample_start:sample_start + sample_count]
-        a = np.pad(a, (0, max(0, sample_count - len(a))))
+        window_has_face = bool(paste_frame[start:start + NUM_FRAMES].any())
         sampler = sample if sample_fn is None else sample_fn
         window_seed = seed + window_index
-        gen = sampler(
-            pipe, whisper, adapter, zero_latents, clip, a,
-            steps=steps, audio_cfg=audio_cfg, seed=window_seed, fps=t_fps)
         color_report = None
-        if harmonize:
-            gen, color_report = harmonize_lower_face(gen, crops, mask > 127)
-        if window_box:
-            paste_alpha = (mask > 127).astype(np.float32) if harmonize else alpha
-            for i, g in enumerate(gen):
-                out[start + i] = paste_back(
-                    frames_p[start + i], g, box, paste_alpha)
-            written = max(written, start + len(gen))
+        if window_box and not window_has_face:
+            written = max(written, start + NUM_FRAMES)
         else:
-            end = start + len(gen)
-            ov = max(0, written - start)
-            if ov:
-                weight = (
-                    np.arange(1, ov + 1, dtype=np.float32) / (ov + 1)
-                )[:, None, None, None]
-                crop_output[start:start + ov] = np.rint(
-                    crop_output[start:start + ov].astype(np.float32) * (1 - weight)
-                    + gen[:ov].astype(np.float32) * weight
-                ).astype(np.uint8)
-            crop_output[start + ov:end] = gen[ov:]
-            written = max(written, end)
-        detail = ""
+            if window_box:
+                box, mask, alpha = region(lm[start:start + NUM_FRAMES])
+                crops = np.stack([
+                    crop(f, box) for f in frames_p[start:start + NUM_FRAMES]
+                ])
+            else:
+                crops = source_crops[start:start + NUM_FRAMES]
+            if window_has_face:
+                clip = {"frames": crops, "mask": mask > 127, "ref": crop(frames_p[ref_idx], box), "prompt": prompt}
+                sample_start = round(start / t_fps * SR)
+                sample_count = round(NUM_FRAMES / t_fps * SR)
+                a = audio[sample_start:sample_start + sample_count]
+                a = np.pad(a, (0, max(0, sample_count - len(a))))
+                gen = sampler(
+                    pipe, whisper, adapter, zero_latents, clip, a,
+                    steps=steps, audio_cfg=audio_cfg, seed=window_seed, fps=t_fps)
+                if harmonize:
+                    gen, color_report = harmonize_lower_face(gen, crops, mask > 127)
+            else:
+                gen = crops
+            if window_box:
+                paste_alpha = (mask > 127).astype(np.float32) if harmonize else alpha
+                for i, g in enumerate(gen):
+                    if paste_frame[start + i]:
+                        out[start + i] = paste_back(
+                            frames_p[start + i], g, box, paste_alpha)
+                written = max(written, start + len(gen))
+            else:
+                end = start + len(gen)
+                ov = max(0, written - start)
+                if ov:
+                    weight = (
+                        np.arange(1, ov + 1, dtype=np.float32) / (ov + 1)
+                    )[:, None, None, None]
+                    crop_output[start:start + ov] = np.rint(
+                        crop_output[start:start + ov].astype(np.float32) * (1 - weight)
+                        + gen[:ov].astype(np.float32) * weight
+                    ).astype(np.uint8)
+                crop_output[start + ov:end] = gen[ov:]
+                written = max(written, end)
+        detail = "" if window_has_face else ", skipped (no face)"
         if color_report is not None:
             detail = (
                 f", chroma MAE {color_report['interior_chroma_mae_before']:.3f}"
@@ -210,8 +235,9 @@ def dub_video(
     if not window_box:
         paste_alpha = (mask > 127).astype(np.float32) if harmonize else alpha
         for index, generated in enumerate(crop_output):
-            out[index] = paste_back(
-                frames_p[index], generated, box, paste_alpha)
+            if paste_frame[index]:
+                out[index] = paste_back(
+                    frames_p[index], generated, box, paste_alpha)
     return out[:, pad:pad + H, pad:pad + W]
 
 
@@ -285,11 +311,12 @@ def dub_video_stream(
             min_tracking_confidence=0.1,
         )
         if not np.isfinite(lm).any():
-            raise RuntimeError("no face landmarks detected in any frame")
+            raise RuntimeError(_NO_FACE_ERROR)
         log(
             "default face detector missed all frames; "
             "using low-confidence FaceMesh fallback"
         )
+    paste_frame = _face_paste_mask(lm)
     face = np.nanmedian(np.maximum(np.ptp(lm[:, :, 0], 1), np.ptp(lm[:, :, 1], 1)))
     if not np.isfinite(face):
         raise RuntimeError("face landmark extent is not finite")
@@ -343,55 +370,70 @@ def dub_video_stream(
         end = start + NUM_FRAMES
         ensure_src(end)
         window_frames = [src_buf[idx - buf_start] for idx in range(start, end)]
-        if window_box:
-            box, mask, alpha = region(lm[start:end])
-            ref_crop = crop(ref_padded, box)
-            paste_alpha = (mask > 127).astype(np.float32) if harmonize else alpha
-        crops = np.stack([crop(f, box) for f in window_frames])
-        clip = {
-            "frames": crops,
-            "mask": mask > 127,
-            "ref": ref_crop,
-            "prompt": prompt,
-        }
-        sample_start = round(start / t_fps * SR)
-        sample_count = round(NUM_FRAMES / t_fps * SR)
-        a = audio[sample_start:sample_start + sample_count]
-        a = np.pad(a, (0, max(0, sample_count - len(a))))
+        window_has_face = bool(paste_frame[start:end].any())
         sampler = sample if sample_fn is None else sample_fn
         window_seed = seed + window_index
-        gen = sampler(
-            pipe, whisper, adapter, zero_latents, clip, a,
-            steps=steps, audio_cfg=audio_cfg, seed=window_seed, fps=t_fps)
         color_report = None
-        if harmonize:
-            gen, color_report = harmonize_lower_face(gen, crops, mask > 127)
-        if window_box:
-            for offset, g in enumerate(gen):
+        if window_box and not window_has_face:
+            for offset in range(NUM_FRAMES):
                 buf_offset = start - buf_start + offset
-                pasted = paste_back(src_buf[start - buf_start + offset], g, box, paste_alpha)
-                if buf_offset < len(pasted_buf):
-                    pasted_buf[buf_offset] = pasted
-                else:
-                    pasted_buf.append(pasted)
+                if buf_offset >= len(pasted_buf):
+                    pasted_buf.append(src_buf[buf_offset])
             written = max(written, end)
         else:
-            ov = max(0, written - start)
-            if ov:
-                weight = (
-                    np.arange(1, ov + 1, dtype=np.float32) / (ov + 1)
-                )[:, None, None, None]
-                tail_start = start - buf_start
-                existing = np.stack(crop_buf[tail_start:tail_start + ov])
-                blended = np.rint(
-                    existing.astype(np.float32) * (1 - weight)
-                    + gen[:ov].astype(np.float32) * weight
-                ).astype(np.uint8)
-                for offset, blended_frame in enumerate(blended):
-                    crop_buf[tail_start + offset] = blended_frame
-            crop_buf.extend(gen[ov:])
-            written = max(written, end)
-        detail = ""
+            if window_box:
+                box, mask, alpha = region(lm[start:end])
+                ref_crop = crop(ref_padded, box)
+                paste_alpha = (mask > 127).astype(np.float32) if harmonize else alpha
+            crops = np.stack([crop(f, box) for f in window_frames])
+            if window_has_face:
+                clip = {
+                    "frames": crops,
+                    "mask": mask > 127,
+                    "ref": ref_crop,
+                    "prompt": prompt,
+                }
+                sample_start = round(start / t_fps * SR)
+                sample_count = round(NUM_FRAMES / t_fps * SR)
+                a = audio[sample_start:sample_start + sample_count]
+                a = np.pad(a, (0, max(0, sample_count - len(a))))
+                gen = sampler(
+                    pipe, whisper, adapter, zero_latents, clip, a,
+                    steps=steps, audio_cfg=audio_cfg, seed=window_seed, fps=t_fps)
+                if harmonize:
+                    gen, color_report = harmonize_lower_face(gen, crops, mask > 127)
+            else:
+                gen = crops
+            if window_box:
+                for offset, g in enumerate(gen):
+                    buf_offset = start - buf_start + offset
+                    pasted = (
+                        paste_back(src_buf[buf_offset], g, box, paste_alpha)
+                        if paste_frame[start + offset]
+                        else src_buf[buf_offset]
+                    )
+                    if buf_offset < len(pasted_buf):
+                        pasted_buf[buf_offset] = pasted
+                    else:
+                        pasted_buf.append(pasted)
+                written = max(written, end)
+            else:
+                ov = max(0, written - start)
+                if ov:
+                    weight = (
+                        np.arange(1, ov + 1, dtype=np.float32) / (ov + 1)
+                    )[:, None, None, None]
+                    tail_start = start - buf_start
+                    existing = np.stack(crop_buf[tail_start:tail_start + ov])
+                    blended = np.rint(
+                        existing.astype(np.float32) * (1 - weight)
+                        + gen[:ov].astype(np.float32) * weight
+                    ).astype(np.uint8)
+                    for offset, blended_frame in enumerate(blended):
+                        crop_buf[tail_start + offset] = blended_frame
+                crop_buf.extend(gen[ov:])
+                written = max(written, end)
+        detail = "" if window_has_face else ", skipped (no face)"
         if color_report is not None:
             detail = (
                 f", chroma MAE {color_report['interior_chroma_mae_before']:.3f}"
@@ -410,10 +452,12 @@ def dub_video_stream(
             for offset in range(count):
                 if window_box:
                     pasted = pasted_buf[offset]
-                else:
+                elif paste_frame[buf_start + offset]:
                     pasted = paste_back(
                         src_buf[offset], crop_buf[offset], box, paste_alpha
                     )
+                else:
+                    pasted = src_buf[offset]
                 out_chunk[offset] = pasted[pad:pad + H, pad:pad + W]
             writer.write(out_chunk)
             for _ in range(count):
