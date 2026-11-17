@@ -155,7 +155,7 @@ def two_step_sampler(model, config):
 
 
 def load_inference_runtime(model, weight_root, device="cuda", revision=None,
-                           sft_steps=None):
+                           sft_steps=None, sft_audio_cfg=None):
     """Load the release model once for one or more inference calls."""
     import_runtime()
     if str(device).startswith("cuda") and not torch.cuda.is_available():
@@ -182,7 +182,12 @@ def load_inference_runtime(model, weight_root, device="cuda", revision=None,
 
     sample_fn = None
     steps = int(config["student_steps"])
+    audio_cfg = float(config["inference_audio_cfg"])
     if config["stage"] != "bidirectional_sft":
+        if sft_steps is not None:
+            raise ValueError("--sft-steps applies only to bidirectional_sft checkpoints")
+        if sft_audio_cfg is not None and float(sft_audio_cfg) != 1.0:
+            raise ValueError("Published VidDub DMD checkpoints require audio CFG 1")
         causal = bool(config.get("causal", False))
         inference_model = CausalWanDub(
             pipe.dit, pipe.vace, adapter,
@@ -194,12 +199,16 @@ def load_inference_runtime(model, weight_root, device="cuda", revision=None,
             causal=causal,
         ).eval().requires_grad_(False)
         sample_fn = two_step_sampler(inference_model, config)
-    elif sft_steps is not None:
-        steps = int(sft_steps)
+    else:
+        if sft_steps is not None:
+            steps = int(sft_steps)
+        if sft_audio_cfg is not None:
+            audio_cfg = float(sft_audio_cfg)
     return {
         "models": (pipe, whisper, adapter, zero),
         "config": config,
         "steps": steps,
+        "audio_cfg": audio_cfg,
         "sample_fn": sample_fn,
     }
 
@@ -220,11 +229,12 @@ def infer_file(runtime, video, audio, output, seed=0, mode="auto", overlap=17,
         (0, max(0, audio_samples - len(waveform))),
     )
     output.parent.mkdir(parents=True, exist_ok=True)
+    audio_cfg = float(runtime.get("audio_cfg", 1.0))
     if num_frames <= 162:
         frames = reader[:].asnumpy()
         generated = dub_video(
             runtime["models"], frames, waveform,
-            steps=runtime["steps"], audio_cfg=1.0, feather=feather, seed=seed,
+            steps=runtime["steps"], audio_cfg=audio_cfg, feather=feather, seed=seed,
             fps=fps, overlap=overlap, mode=mode, harmonize=harmonize,
             sample_fn=runtime["sample_fn"],
         )
@@ -244,7 +254,7 @@ def infer_file(runtime, video, audio, output, seed=0, mode="auto", overlap=17,
                 waveform,
                 writer,
                 steps=runtime["steps"],
-                audio_cfg=1.0,
+                audio_cfg=audio_cfg,
                 feather=feather,
                 seed=seed,
                 fps=fps,
@@ -282,6 +292,8 @@ def main():
     parser.add_argument("--feather", type=int, default=15)
     parser.add_argument("--sft-steps", type=int,
                         help="Override SFT sampling steps; default from config")
+    parser.add_argument("--sft-audio-cfg", type=float,
+                        help="Override SFT audio CFG (e.g., 2.0 for Teacher-48)")
     args = parser.parse_args()
     runtime = load_inference_runtime(
         args.model,
@@ -289,6 +301,7 @@ def main():
         device=args.device,
         revision=args.revision,
         sft_steps=args.sft_steps,
+        sft_audio_cfg=args.sft_audio_cfg,
     )
     infer_file(
         runtime,

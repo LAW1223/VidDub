@@ -33,7 +33,7 @@ MODELS = {
         "student_steps": 30,
         "sampling": "flow_euler",
         "teacher_cfg": None,
-        "description": "Best bidirectional VidDub SFT checkpoint (r2a EMA@200).",
+        "description": "Replacement-aware full-context VidDub teacher checkpoint (r2a EMA@200).",
         "lineage": ["r2a EMA@200"],
     },
     "final": {
@@ -185,7 +185,13 @@ to the exporter when preparing a Hugging Face upload card."""
     step_note = (f"The full-context sampling step count is fixed to **{steps}** by the model config. "
                  "Inference audio CFG is fixed to **1**."
                  if spec["stage"] != "bidirectional_sft"
-                 else f"The default SFT sampling step count is **{steps}** and can be changed with `--sft-steps`.")
+                 else f"The default teacher sampling step count is **{steps}** (audio CFG 1.0); "
+                      "override with `--sft-steps 48 --sft-audio-cfg 2.0` to match the paper's "
+                      "Teacher-48 setting, or use the distilled 2-step student at "
+                      f"`{hf_namespace}/VidDub`." if hf_namespace else
+                      f"The default teacher sampling step count is **{steps}** (audio CFG 1.0); "
+                      "override with `--sft-steps 48 --sft-audio-cfg 2.0` to match the paper's "
+                      "Teacher-48 setting.")
     return f"""---
 {license_header}library_name: viddub
 pipeline_tag: video-to-video
@@ -278,7 +284,9 @@ overlaps are linearly blended, and lower-face color harmonization is enabled.
 --feather 15      Mouth-region paste-back feather radius
 --seed 0          Sampling seed
 --device cuda     Inference device
---sft-steps 30    SFT only: override denoising steps
+--sft-steps 30    SFT only: override denoising steps (e.g., 48 for Teacher-48)
+--sft-audio-cfg 1.0
+                  SFT only: override audio CFG (e.g., 2.0 for Teacher-48)
 ```
 
 ## OpenDub application

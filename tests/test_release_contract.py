@@ -88,6 +88,22 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn('"google/umt5-xxl"', source)
         self.assertIn("load_models(device, include_text_encoder=False)", source)
 
+    def test_encode_text_uses_cached_empty_context_when_t5_is_offloaded(self):
+        import types
+        import torch
+        from viddub.full_context import runtime as full_context_runtime
+
+        cached = torch.ones((2, 4096), dtype=torch.bfloat16)
+        fake_pipe = types.SimpleNamespace(
+            device=torch.device("cpu"),
+            torch_dtype=torch.bfloat16,
+            text_encoder=None,
+            tokenizer=None,
+            _wan_dub_empty_context=cached,
+        )
+        out = full_context_runtime.encode_text(fake_pipe, "")
+        self.assertTrue(torch.equal(out, cached))
+
     def test_decord_is_imported_after_torch_and_mediapipe(self):
         for relative, anchor in (
             ("data/s01_analyze.py", "import mediapipe"),

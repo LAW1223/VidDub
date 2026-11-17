@@ -240,6 +240,21 @@ files from different stages or steps. The Wan backbone is 1.3B parameters, the
 adapted DiT/VACE/audio-adapter components contain 2.441B parameters, and the
 complete benchmarked inference stack contains 2.81B parameters.
 
+For research and distillation experiments, the replacement-aware full-context
+teacher checkpoint (`r2a EMA@200`) is also available at
+[AIPeanutman/VidDub-SFT](https://huggingface.co/AIPeanutman/VidDub-SFT):
+
+```bash
+python scripts/infer.py \
+  --model AIPeanutman/VidDub-SFT \
+  --weight-root weights \
+  --video input.mp4 \
+  --audio replacement.wav \
+  --output teacher_output.mp4 \
+  --sft-steps 48 \
+  --sft-audio-cfg 2.0
+```
+
 ## Benchmark
 
 Download and validate the frozen VidDub-Bench package:

@@ -146,6 +146,8 @@ def to_video_tensor(frames, pipe):
 @torch.no_grad()
 def encode_text(pipe, prompt):
     """T5 context trimmed to its real length: [L, 4096]."""
+    if not prompt and getattr(pipe, "_wan_dub_empty_context", None) is not None:
+        return pipe._wan_dub_empty_context.to(pipe.device, pipe.torch_dtype)
     emb = WanVideoUnit_PromptEmbedder().encode_prompt(pipe, prompt)[0]
     n = int((emb.abs().sum(-1) > 0).sum())
     return emb[:max(n, 1)]
