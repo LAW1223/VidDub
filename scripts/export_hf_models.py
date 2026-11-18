@@ -192,6 +192,15 @@ to the exporter when preparing a Hugging Face upload card."""
                       f"The default teacher sampling step count is **{steps}** (audio CFG 1.0); "
                       "override with `--sft-steps 48 --sft-audio-cfg 2.0` to match the paper's "
                       "Teacher-48 setting.")
+    companion_link = (
+        f"- [Teacher model ({hf_namespace}/VidDub-SFT)](https://huggingface.co/{hf_namespace}/VidDub-SFT)"
+        if hf_namespace and spec["stage"] != "bidirectional_sft"
+        else f"- [Distilled 2-step model ({hf_namespace}/VidDub)](https://huggingface.co/{hf_namespace}/VidDub)"
+        if hf_namespace
+        else "- [Teacher model (AIPeanutman/VidDub-SFT)](https://huggingface.co/AIPeanutman/VidDub-SFT)"
+        if spec["stage"] != "bidirectional_sft"
+        else "- [Distilled 2-step model (AIPeanutman/VidDub)](https://huggingface.co/AIPeanutman/VidDub)"
+    )
     return f"""---
 {license_header}library_name: viddub
 pipeline_tag: video-to-video
@@ -213,19 +222,28 @@ tags:
 - [Paper]({paper_url})
 - [Project page]({PROJECT_URL})
 - [Code]({github_url})
+{companion_link}
 - [Community demo]({DEMO_URL})
 - [OpenDub application]({OPENDUB_URL})
+- [ComfyUI custom node](https://github.com/LAW1223/ComfyUI-VidDub)
 - [VidDub-Bench](https://huggingface.co/datasets/AIPeanutman/VidDub-Bench)
 
 ## News
 
+- **2026-11-18:** Replacement-aware full-context teacher checkpoint released on
+  [Hugging Face](https://huggingface.co/AIPeanutman/VidDub-SFT) (`r2a EMA@200`).
+- **2026-11-10:** [ComfyUI-VidDub](https://github.com/LAW1223/ComfyUI-VidDub),
+  the official ComfyUI custom node, released.
+- **2026-11-10:** Curated training release published:
+  [source videos](https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Data)
+  and [model-ready clips](https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Clips).
 - **2026-11-06:** A [VidDub community demo]({DEMO_URL}) is live on Hugging Face
   Spaces. Thanks to **Apolinario, from the open-source team at Hugging Face**,
   for creating and hosting it.
 - **2026-11-06:** [OpenDub]({OPENDUB_URL}), a browser-based end-to-end video
   translation and dubbing workbench, released.
 - **2026-11-03:** Training code released.
-- **2026-11-03:** Model weights released.
+- **2026-11-03:** Model weights released on [Hugging Face](https://huggingface.co/AIPeanutman/VidDub).
 - **2026-11-02:** Paper released on [arXiv]({paper_url}).
 
 ## Quick Start

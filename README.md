@@ -17,6 +17,7 @@
   <a href="https://github.com/LAW1223/OpenDub"><img src="assets/badge-opendub.svg" alt="OpenDub application"></a>
   <a href="https://github.com/LAW1223/ComfyUI-VidDub"><img src="https://img.shields.io/badge/ComfyUI-Custom%20Node-111827?style=flat-square" alt="ComfyUI-VidDub custom node"></a>
   <a href="https://huggingface.co/AIPeanutman/VidDub"><img src="https://img.shields.io/badge/🤗%20Model-VidDub-ffd21e?style=flat-square" alt="Model weights"></a>
+  <a href="https://huggingface.co/AIPeanutman/VidDub-SFT"><img src="https://img.shields.io/badge/🤗%20Teacher-VidDub--SFT-ffd21e?style=flat-square" alt="Teacher model weights"></a>
   <a href="https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Data"><img src="https://img.shields.io/badge/🤗%20Data-Source%20Videos-ffd21e?style=flat-square" alt="VidDub training source data"></a>
   <a href="https://huggingface.co/datasets/AIPeanutman/VidDub-Training-Clips"><img src="https://img.shields.io/badge/🤗%20Data-Training%20Clips-ffd21e?style=flat-square" alt="VidDub processed training clips"></a>
   <a href="https://huggingface.co/datasets/AIPeanutman/VidDub-Bench"><img src="https://img.shields.io/badge/🤗%20Benchmark-VidDub--Bench-ffd21e?style=flat-square" alt="VidDub-Bench"></a>
@@ -96,6 +97,8 @@ The frozen inputs and pairings are released as
 
 ## News
 
+- **2026-11-18:** Replacement-aware full-context teacher checkpoint released on
+  [Hugging Face](https://huggingface.co/AIPeanutman/VidDub-SFT) (`r2a EMA@200`).
 - **2026-11-10:** [ComfyUI-VidDub](https://github.com/LAW1223/ComfyUI-VidDub),
   the official ComfyUI custom node, released and validated end to end on
   an NVIDIA H20 with the public two-step model.

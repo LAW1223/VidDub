@@ -11,6 +11,7 @@ in this repository.
 - Project page: <https://law1223.github.io/viddub-project-page/>
 - Community demo: <https://huggingface.co/spaces/hugging-apps/viddub-2611>
 - Model weights: <https://huggingface.co/AIPeanutman/VidDub>
+- Teacher model weights: <https://huggingface.co/AIPeanutman/VidDub-SFT>
 - Benchmark: <https://huggingface.co/datasets/AIPeanutman/VidDub-Bench>
 - Companion application workbench: <https://github.com/LAW1223/OpenDub>
 - Selected release model: `FULL2_DMD_R4@100`
