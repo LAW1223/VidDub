@@ -22,7 +22,7 @@ from data.s02_make_clips import CROP_SCALE, LM_LIP_LOW, LM_LIP_UP, NUM_FRAMES, S
 import decord  # noqa: E402
 
 from .audio import DubAudioAdapter
-from .color_harmonization import harmonize_lower_face
+from .color_harmonization import HarmonizationConfig, harmonize_lower_face, skin_anchor_mask
 from .runtime import FPS, PROJECT, SR, ZeroLatents, load_models, sample, write_mp4
 
 
@@ -101,6 +101,7 @@ def dub_video(
     harmonize=True,
     log=print,
     sample_fn=None,
+    harmonization_config=None,
 ):
     """frames: uint8 [T,H,W,3] at 24 fps; audio: 16 kHz mono. Returns dubbed frames, same shape.
     window_box: crop box and mask from each window's own landmarks (as in training) instead of the whole video.
@@ -167,6 +168,13 @@ def dub_video(
 
     # Default: one crop box and one mask for the whole video, keeping the mouth region stable across windows.
     box, mask, alpha = region(lm)
+    effective_harmonize = harmonize
+    if not window_box and effective_harmonize:
+        try:
+            skin_anchor_mask(mask > 127, harmonization_config or HarmonizationConfig())
+        except ValueError as exc:
+            log(f"color harmonization skipped: {exc} (falling back to feathered blending)")
+            effective_harmonize = False
     out = frames_p.copy()
     crop_output = None
     written = 0
@@ -178,6 +186,7 @@ def dub_video(
         sampler = sample if sample_fn is None else sample_fn
         window_seed = seed + window_index
         color_report = None
+        window_harmonized = False
         if window_box and not window_has_face:
             written = max(written, start + NUM_FRAMES)
         else:
@@ -197,12 +206,26 @@ def dub_video(
                 gen = sampler(
                     pipe, whisper, adapter, zero_latents, clip, a,
                     steps=steps, audio_cfg=audio_cfg, seed=window_seed, fps=t_fps)
-                if harmonize:
-                    gen, color_report = harmonize_lower_face(gen, crops, mask > 127)
+                if effective_harmonize:
+                    try:
+                        if harmonization_config is None:
+                            gen, color_report = harmonize_lower_face(gen, crops, mask > 127)
+                        else:
+                            gen, color_report = harmonize_lower_face(
+                                gen, crops, mask > 127, config=harmonization_config
+                            )
+                        window_harmonized = True
+                    except ValueError as exc:
+                        log(
+                            f"window {window_index}: color harmonization skipped: {exc} "
+                            "(falling back to feathered blending)"
+                        )
+                        if not window_box:
+                            effective_harmonize = False
             else:
                 gen = crops
             if window_box:
-                paste_alpha = (mask > 127).astype(np.float32) if harmonize else alpha
+                paste_alpha = (mask > 127).astype(np.float32) if window_harmonized else alpha
                 for i, g in enumerate(gen):
                     if paste_frame[start + i]:
                         out[start + i] = paste_back(
@@ -233,7 +256,7 @@ def dub_video(
     if written != n:
         raise RuntimeError(f"window merge wrote {written} frames, expected {n}")
     if not window_box:
-        paste_alpha = (mask > 127).astype(np.float32) if harmonize else alpha
+        paste_alpha = (mask > 127).astype(np.float32) if effective_harmonize else alpha
         for index, generated in enumerate(crop_output):
             if paste_frame[index]:
                 out[index] = paste_back(
@@ -280,6 +303,7 @@ def dub_video_stream(
     harmonize=True,
     log=print,
     sample_fn=None,
+    harmonization_config=None,
 ):
     """Bounded-RAM streaming equivalent of ``dub_video`` for long videos."""
     pipe, whisper, adapter, zero_latents = models
@@ -341,10 +365,17 @@ def dub_video_stream(
         x0, y0, side = box
         return cv2.resize(f[y0:y0 + side, x0:x0 + side], (SIZE, SIZE), interpolation=cv2.INTER_AREA)
 
+    effective_harmonize = harmonize
     if not window_box:
         box, mask, alpha = region(lm)
         ref_crop = crop(ref_padded, box)
-        paste_alpha = (mask > 127).astype(np.float32) if harmonize else alpha
+        if effective_harmonize:
+            try:
+                skin_anchor_mask(mask > 127, harmonization_config or HarmonizationConfig())
+            except ValueError as exc:
+                log(f"color harmonization skipped: {exc} (falling back to feathered blending)")
+                effective_harmonize = False
+        paste_alpha = (mask > 127).astype(np.float32) if effective_harmonize else alpha
 
     chunk_iter = iter(frame_source.iter_chunks())
     src_buf = deque()
@@ -374,6 +405,7 @@ def dub_video_stream(
         sampler = sample if sample_fn is None else sample_fn
         window_seed = seed + window_index
         color_report = None
+        window_harmonized = False
         if window_box and not window_has_face:
             for offset in range(NUM_FRAMES):
                 buf_offset = start - buf_start + offset
@@ -384,7 +416,6 @@ def dub_video_stream(
             if window_box:
                 box, mask, alpha = region(lm[start:end])
                 ref_crop = crop(ref_padded, box)
-                paste_alpha = (mask > 127).astype(np.float32) if harmonize else alpha
             crops = np.stack([crop(f, box) for f in window_frames])
             if window_has_face:
                 clip = {
@@ -400,11 +431,27 @@ def dub_video_stream(
                 gen = sampler(
                     pipe, whisper, adapter, zero_latents, clip, a,
                     steps=steps, audio_cfg=audio_cfg, seed=window_seed, fps=t_fps)
-                if harmonize:
-                    gen, color_report = harmonize_lower_face(gen, crops, mask > 127)
+                if effective_harmonize:
+                    try:
+                        if harmonization_config is None:
+                            gen, color_report = harmonize_lower_face(gen, crops, mask > 127)
+                        else:
+                            gen, color_report = harmonize_lower_face(
+                                gen, crops, mask > 127, config=harmonization_config
+                            )
+                        window_harmonized = True
+                    except ValueError as exc:
+                        log(
+                            f"window {window_index}: color harmonization skipped: {exc} "
+                            "(falling back to feathered blending)"
+                        )
+                        if not window_box:
+                            effective_harmonize = False
+                            paste_alpha = alpha
             else:
                 gen = crops
             if window_box:
+                paste_alpha = (mask > 127).astype(np.float32) if window_harmonized else alpha
                 for offset, g in enumerate(gen):
                     buf_offset = start - buf_start + offset
                     pasted = (

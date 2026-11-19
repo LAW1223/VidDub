@@ -8,6 +8,7 @@ import torch
 
 from viddub.causal.sampling import rollout, schedule
 from viddub.full_context import inference
+from viddub.full_context.color_harmonization import HarmonizationConfig, harmonize_lower_face
 from viddub.full_context.runtime import Mp4StreamWriter, write_mp4
 
 
@@ -267,6 +268,96 @@ class StreamingInferenceEquivalenceTests(unittest.TestCase):
                     audio,
                     log=lambda *_: None,
                 )
+
+    def test_too_few_skin_anchors_falls_back_to_feathered_blending(self):
+        rng = np.random.default_rng(77)
+        num_frames = 150
+        frames = rng.integers(30, 220, size=(num_frames, 320, 320, 3), dtype=np.uint8)
+        audio = np.zeros(int(num_frames / 24.0 * 16000), dtype=np.float32)
+        lm, nfaces = self._synthetic_landmarks(num_frames, 320, 320, 160.0)
+        models = (None, None, None, None)
+
+        tiny_mask = np.zeros((512, 512), dtype=np.uint8)
+        tiny_mask[250:254, 250:254] = 255
+        logs_mem = []
+        logs_stream = []
+
+        with mock.patch.object(
+            inference, "detect_landmarks", return_value=(lm.copy(), nfaces.copy())
+        ), mock.patch.object(
+            inference, "detect_landmarks_iter", return_value=(lm.copy(), nfaces.copy())
+        ), mock.patch.object(
+            inference, "lower_face_mask", return_value=tiny_mask.copy()
+        ):
+            expected_unharmonized = inference.dub_video(
+                models,
+                frames,
+                audio,
+                steps=2,
+                seed=3,
+                overlap=17,
+                harmonize=False,
+                log=lambda *_: None,
+                sample_fn=self._fake_sampler,
+            )
+            fallback_mem = inference.dub_video(
+                models,
+                frames,
+                audio,
+                steps=2,
+                seed=3,
+                overlap=17,
+                harmonize=True,
+                log=logs_mem.append,
+                sample_fn=self._fake_sampler,
+            )
+            writer = _MemoryWriter()
+            written = inference.dub_video_stream(
+                models,
+                _DummyFrameSource(frames),
+                audio,
+                writer,
+                steps=2,
+                seed=3,
+                overlap=17,
+                harmonize=True,
+                log=logs_stream.append,
+                sample_fn=self._fake_sampler,
+            )
+
+        self.assertEqual(written, num_frames)
+        self.assertTrue(np.array_equal(fallback_mem, expected_unharmonized))
+        self.assertTrue(np.array_equal(writer.result(), expected_unharmonized))
+        self.assertTrue(any("color harmonization skipped" in msg for msg in logs_mem))
+        self.assertTrue(any("color harmonization skipped" in msg for msg in logs_stream))
+
+    def test_harmonization_ignores_source_teeth_inside_mouth_interior(self):
+        # Matching dark skin tone across source and generated frames, but
+        # source has bright white teeth inside the central mouth while
+        # generated has closed warm lips.
+        skin = np.array([115, 78, 62], dtype=np.uint8)
+        lips = np.array([145, 72, 74], dtype=np.uint8)
+        teeth = np.array([245, 245, 245], dtype=np.uint8)
+        source = np.broadcast_to(skin, (5, 256, 256, 3)).copy()
+        generated = np.broadcast_to(skin, (5, 256, 256, 3)).copy()
+        mask = np.zeros((256, 256), dtype=bool)
+        mask[70:210, 50:206] = True
+        # Central mouth patch (inside mask, outside cheek/upper anchors)
+        source[:, 120:170, 95:161] = teeth
+        generated[:, 120:170, 95:161] = lips
+
+        out, report = harmonize_lower_face(generated, source, mask)
+        lip_region = out[:, 130:160, 105:151]
+        # Closed lips must stay close to their natural color rather than
+        # getting desaturated toward white/gray teeth.
+        max_lip_drift = np.abs(lip_region.astype(np.float32) - lips.astype(np.float32)).max()
+        self.assertLess(max_lip_drift, 3.0)
+        self.assertAlmostEqual(report["chroma_field_strength"], 0.90)
+
+        _, custom_report = harmonize_lower_face(
+            generated, source, mask, config=HarmonizationConfig(chroma_field_strength=0.35)
+        )
+        self.assertAlmostEqual(custom_report["chroma_field_strength"], 0.35)
 
     def test_mp4_stream_writer_produces_decodable_video(self):
         import decord

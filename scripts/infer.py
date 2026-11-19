@@ -20,7 +20,7 @@ def import_runtime():
     """Import GPU/media dependencies only after CLI parsing succeeds."""
     global decord, librosa, np, torch, snapshot_download, load_file
     global CausalConfig, CausalWanDub, autocast, rollout, schedule
-    global DubAudioAdapter, full_context_runtime, FPS, SR, ZeroLatents
+    global DubAudioAdapter, HarmonizationConfig, full_context_runtime, FPS, SR, ZeroLatents
     global Mp4StreamWriter, build_inputs, load_models, to_video_tensor, write_mp4
     global DecordFrameSource, dub_video, dub_video_stream
 
@@ -34,6 +34,7 @@ def import_runtime():
     from viddub.causal.runtime import autocast
     from viddub.causal.sampling import rollout, schedule
     from viddub.full_context.audio import DubAudioAdapter
+    from viddub.full_context.color_harmonization import HarmonizationConfig
     # Import inference/mediapipe/torch before decord so decord's bundled VC++
     # runtime on Windows does not shadow the newer runtime expected by mediapipe.
     from viddub.full_context.inference import (
@@ -214,11 +215,17 @@ def load_inference_runtime(model, weight_root, device="cuda", revision=None,
 
 
 def infer_file(runtime, video, audio, output, seed=0, mode="auto", overlap=17,
-               feather=15, harmonize=True):
+               feather=15, harmonize=True, chroma_field_strength=None):
     """Run one media pair with an already loaded inference runtime."""
     video = str(video)
     audio = str(audio)
     output = Path(output)
+    harmonization_config = None
+    if chroma_field_strength is not None:
+        strength = float(chroma_field_strength)
+        if not 0.0 <= strength <= 1.0:
+            raise ValueError(f"chroma_field_strength must be in [0, 1]; got {strength}")
+        harmonization_config = HarmonizationConfig(chroma_field_strength=strength)
     reader = decord.VideoReader(video, num_threads=2)
     fps = float(reader.get_avg_fps())
     num_frames = len(reader)
@@ -237,6 +244,7 @@ def infer_file(runtime, video, audio, output, seed=0, mode="auto", overlap=17,
             steps=runtime["steps"], audio_cfg=audio_cfg, feather=feather, seed=seed,
             fps=fps, overlap=overlap, mode=mode, harmonize=harmonize,
             sample_fn=runtime["sample_fn"],
+            harmonization_config=harmonization_config,
         )
         write_mp4(output, generated, waveform, fps=fps)
     else:
@@ -262,6 +270,7 @@ def infer_file(runtime, video, audio, output, seed=0, mode="auto", overlap=17,
                 mode=mode,
                 harmonize=harmonize,
                 sample_fn=runtime["sample_fn"],
+                harmonization_config=harmonization_config,
             )
     return output
 
@@ -289,6 +298,9 @@ def main():
     parser.add_argument(
         "--no-color-harmonization", action="store_true",
         help="disable the paper's lower-face Lab correction and source feathering")
+    parser.add_argument(
+        "--chroma-field-strength", type=float, default=None,
+        help="spatial chroma strength for color harmonization in [0, 1] (default: 0.90)")
     parser.add_argument("--feather", type=int, default=15)
     parser.add_argument("--sft-steps", type=int,
                         help="Override SFT sampling steps; default from config")
@@ -313,6 +325,7 @@ def main():
         overlap=args.overlap,
         feather=args.feather,
         harmonize=not args.no_color_harmonization,
+        chroma_field_strength=args.chroma_field_strength,
     )
     print(f"Wrote {args.output}")
 

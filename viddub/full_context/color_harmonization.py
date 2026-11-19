@@ -106,7 +106,21 @@ def harmonize_lower_face(
     output = np.empty_like(generated)
     before = []
     after = []
-    interior = np.asarray(mask, dtype=bool) & (alpha[..., 0] > 0.95)
+    mask_bool = np.asarray(mask, dtype=bool)
+    interior = mask_bool & (alpha[..., 0] > 0.95)
+    if not interior.any():
+        interior = mask_bool
+    # Estimate the low-frequency spatial residual only from non-mouth pixels
+    # (outside the edit mask plus skin anchors) so source teeth or an open
+    # mouth cavity cannot pull closed generated lips toward gray.
+    support = (~mask_bool) | anchors
+    support_f = support.astype(np.float32)
+    support_blur = cv2.GaussianBlur(
+        support_f,
+        (0, 0),
+        config.spatial_sigma_px,
+        borderType=cv2.BORDER_REFLECT,
+    )[..., None]
     for index, (generated_frame, source_frame) in enumerate(
         zip(generated, source)
     ):
@@ -115,11 +129,16 @@ def harmonize_lower_face(
         source_lab = cv2.cvtColor(
             source_frame, cv2.COLOR_RGB2LAB).astype(np.float32)
         base_lab = generated_lab + deltas[index]
-        field = cv2.GaussianBlur(
-            source_lab - base_lab,
+        field_num = cv2.GaussianBlur(
+            (source_lab - base_lab) * support_f[..., None],
             (0, 0),
             config.spatial_sigma_px,
             borderType=cv2.BORDER_REFLECT,
+        )
+        field = np.where(
+            support_blur > 1e-4,
+            field_num / np.maximum(support_blur, 1e-4),
+            0.0,
         )
         field[..., 0] *= config.luminance_field_strength
         field[..., 1:] *= config.chroma_field_strength
