@@ -541,6 +541,62 @@ class StreamingInferenceEquivalenceTests(unittest.TestCase):
                 import decord
                 self.assertEqual(len(decord.VideoReader(str(out_path))), num_frames)
 
+    def test_full_range_roi_landmark_fallback_maps_coordinates(self):
+        import types
+        from data import s01_analyze
+
+        width, height = 1920, 1088
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        # Simulated detection centered at (960, 544) with 120x120 px box
+        bb = types.SimpleNamespace(
+            xmin=900 / width,
+            ymin=484 / height,
+            width=120 / width,
+            height=120 / height,
+        )
+        det = types.SimpleNamespace(
+            location_data=types.SimpleNamespace(relative_bounding_box=bb)
+        )
+        fake_landmarks = [types.SimpleNamespace(x=0.5, y=0.5) for _ in range(468)]
+        fake_landmarks[10] = types.SimpleNamespace(x=0.5, y=0.3)
+        fake_landmarks[152] = types.SimpleNamespace(x=0.5, y=0.7)
+
+        class _FakeDetector:
+            def __init__(self, detections):
+                self._detections = detections
+
+            def process(self, img):
+                return types.SimpleNamespace(detections=self._detections)
+
+        class _FakeRoiMesh:
+            def __init__(self):
+                self.crops = []
+
+            def process(self, crop):
+                self.crops.append(crop.shape)
+                return types.SimpleNamespace(
+                    multi_face_landmarks=[types.SimpleNamespace(landmark=fake_landmarks)]
+                )
+
+        roi_mesh = _FakeRoiMesh()
+        pts, count = s01_analyze._detect_face_via_full_range_roi(
+            frame, width, height, _FakeDetector([det]), roi_mesh
+        )
+        self.assertEqual(count, 1)
+        self.assertEqual(pts.shape, (468, 2))
+        self.assertEqual(roi_mesh.crops, [(300, 300, 3)])
+        # Center of 300x300 crop around (960, 544) maps back to (960, 544)
+        self.assertAlmostEqual(float(pts[0, 0]), 960.0, places=1)
+        self.assertAlmostEqual(float(pts[0, 1]), 544.0, places=1)
+        self.assertAlmostEqual(float(pts[152, 1] - pts[10, 1]), 120.0, places=1)
+
+        # No detections (B-roll frame) -> returns (None, 0)
+        none_pts, zero_count = s01_analyze._detect_face_via_full_range_roi(
+            frame, width, height, _FakeDetector([]), roi_mesh
+        )
+        self.assertIsNone(none_pts)
+        self.assertEqual(zero_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

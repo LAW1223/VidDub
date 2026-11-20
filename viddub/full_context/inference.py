@@ -145,6 +145,11 @@ def dub_video(
             "using low-confidence FaceMesh fallback"
         )
     paste_frame = _face_paste_mask(lm)
+    if not paste_frame.all():
+        log(
+            f"face detected on {int(paste_frame.sum())}/{n} frames "
+            "(remaining frames will be passed through unchanged)"
+        )
     # Tight shots (face*CROP_SCALE > frame): edge-pad so the face/crop ratio matches training.
     face = np.nanmedian(np.maximum(np.ptp(lm[:, :, 0], 1), np.ptp(lm[:, :, 1], 1)))
     if not np.isfinite(face):
@@ -440,6 +445,11 @@ def dub_video_stream(
             "using low-confidence FaceMesh fallback"
         )
     paste_frame = _face_paste_mask(lm)
+    if not paste_frame.all():
+        log(
+            f"face detected on {int(paste_frame.sum())}/{n} frames "
+            "(remaining frames will be passed through unchanged)"
+        )
     face = np.nanmedian(np.maximum(np.ptp(lm[:, :, 0], 1), np.ptp(lm[:, :, 1], 1)))
     if not np.isfinite(face):
         raise RuntimeError("face landmark extent is not finite")

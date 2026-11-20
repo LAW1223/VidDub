@@ -47,6 +47,49 @@ def load_syncnet(device):
     return net
 
 
+def _detect_face_via_full_range_roi(frame, width, height, full_range_detector, roi_mesh):
+    """Fallback for wide/medium shots where short-range FaceMesh misses smaller faces."""
+    det_res = full_range_detector.process(frame)
+    detections = det_res.detections or []
+    if not detections:
+        return None, 0
+
+    candidates = []
+    for det in detections:
+        bb = det.location_data.relative_bounding_box
+        bw = float(bb.width) * width
+        bh = float(bb.height) * height
+        if bw <= 1.0 or bh <= 1.0:
+            continue
+        cx = float(np.clip((bb.xmin + bb.width / 2.0) * width, 0.0, width))
+        cy = float(np.clip((bb.ymin + bb.height / 2.0) * height, 0.0, height))
+        candidates.append((bw * bh, cx, cy, bw, bh))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+
+    for _, cx, cy, bw, bh in candidates:
+        side = min(max(int(round(max(bw, bh) * 2.5)), 64), width, height)
+        if side < 16:
+            continue
+        x0 = max(0, min(width - side, int(round(cx - side / 2.0))))
+        y0 = max(0, min(height - side, int(round(cy - side / 2.0))))
+        x1 = x0 + side
+        y1 = y0 + side
+        crop = np.ascontiguousarray(frame[y0:y1, x0:x1])
+        roi_res = roi_mesh.process(crop)
+        if roi_res.multi_face_landmarks:
+            crop_w = x1 - x0
+            crop_h = y1 - y0
+            pts = np.array(
+                [
+                    (p.x * crop_w + x0, p.y * crop_h + y0)
+                    for p in roi_res.multi_face_landmarks[0].landmark[:468]
+                ],
+                dtype=np.float32,
+            )
+            return pts, len(candidates)
+    return None, 0
+
+
 def detect_landmarks_iter(
     frame_chunks,
     num_frames,
@@ -54,27 +97,53 @@ def detect_landmarks_iter(
     width,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5,
+    full_range_fallback=True,
 ):
     lm = np.full((num_frames, 468, 2), np.nan, dtype=np.float32)
     nfaces = np.zeros(num_frames, dtype=np.int8)
     t = 0
-    with mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=False,
-        max_num_faces=2,
-        min_detection_confidence=min_detection_confidence,
-        min_tracking_confidence=min_tracking_confidence,
-    ) as face_mesh:
-        for chunk in frame_chunks:
-            for frame in chunk:
-                res = face_mesh.process(frame)
-                if res.multi_face_landmarks:
-                    nfaces[t] = len(res.multi_face_landmarks)
-                    faces = [
-                        np.array([(p.x * width, p.y * height) for p in f.landmark[:468]])
-                        for f in res.multi_face_landmarks
-                    ]
-                    lm[t] = max(faces, key=lambda a: np.ptp(a[:, 1]))  # largest face
-                t += 1
+    full_range_detector = None
+    roi_mesh = None
+    try:
+        with mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=2,
+            min_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+        ) as face_mesh:
+            for chunk in frame_chunks:
+                for frame in chunk:
+                    res = face_mesh.process(frame)
+                    if res.multi_face_landmarks:
+                        nfaces[t] = len(res.multi_face_landmarks)
+                        faces = [
+                            np.array([(p.x * width, p.y * height) for p in f.landmark[:468]])
+                            for f in res.multi_face_landmarks
+                        ]
+                        lm[t] = max(faces, key=lambda a: np.ptp(a[:, 1]))  # largest face
+                    elif full_range_fallback:
+                        if full_range_detector is None:
+                            full_range_detector = mp.solutions.face_detection.FaceDetection(
+                                model_selection=1,
+                                min_detection_confidence=min_detection_confidence,
+                            )
+                            roi_mesh = mp.solutions.face_mesh.FaceMesh(
+                                static_image_mode=True,
+                                max_num_faces=1,
+                                min_detection_confidence=min(min_detection_confidence, 0.2),
+                            )
+                        pts, count = _detect_face_via_full_range_roi(
+                            frame, width, height, full_range_detector, roi_mesh
+                        )
+                        if pts is not None:
+                            lm[t] = pts
+                            nfaces[t] = min(count, 127)
+                    t += 1
+    finally:
+        if full_range_detector is not None:
+            full_range_detector.close()
+        if roi_mesh is not None:
+            roi_mesh.close()
     if t != num_frames:
         raise ValueError(f"Expected {num_frames} frames in landmark pass, got {t}")
     return lm, nfaces
@@ -84,6 +153,7 @@ def detect_landmarks(
     frames,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5,
+    full_range_fallback=True,
 ):
     T, H, W = frames.shape[:3]
     return detect_landmarks_iter(
@@ -93,6 +163,7 @@ def detect_landmarks(
         W,
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
+        full_range_fallback=full_range_fallback,
     )
 
 
