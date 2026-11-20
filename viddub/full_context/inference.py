@@ -15,8 +15,25 @@ import numpy as np
 import torch
 from safetensors.torch import load_file
 
-from data.s01_analyze import detect_landmarks, detect_landmarks_iter  # noqa: E402
-from data.s02_make_clips import CROP_SCALE, LM_LIP_LOW, LM_LIP_UP, NUM_FRAMES, SIZE, crop_box, lower_face_mask  # noqa: E402
+from data.s01_analyze import (  # noqa: E402
+    _is_valid_face_landmarks,
+    detect_landmarks,
+    detect_landmarks_iter,
+)
+from data.s02_make_clips import (  # noqa: E402
+    CROP_SCALE,
+    LM_CHEEK_L,
+    LM_CHEEK_R,
+    LM_CHIN,
+    LM_FOREHEAD,
+    LM_LIP_LOW,
+    LM_LIP_UP,
+    LM_NOSE_BOTTOM,
+    NUM_FRAMES,
+    SIZE,
+    crop_box,
+    lower_face_mask,
+)
 # Import decord after torch and mediapipe so decord's bundled VC++ runtime on
 # Windows does not shadow the newer runtime expected by mediapipe.
 import decord  # noqa: E402
@@ -43,6 +60,189 @@ def _face_paste_mask(lm, max_gap=2):
             if 1 < curr - prev <= max_gap + 1:
                 valid[prev + 1:curr] = True
     return valid
+
+
+def clean_landmark_track(lm, height, width):
+    """Reject geometrically invalid frames and abrupt spatial/scale landmark outliers."""
+    cleaned = np.asarray(lm, dtype=np.float32).copy()
+    n = len(cleaned)
+    rejected = 0
+
+    for t in range(n):
+        if np.isfinite(cleaned[t]).any() and not _is_valid_face_landmarks(
+            cleaned[t], width, height
+        ):
+            cleaned[t] = np.nan
+            rejected += 1
+
+    valid_idx = np.flatnonzero(np.isfinite(cleaned).all(axis=(1, 2)))
+    if len(valid_idx) < 3:
+        return cleaned, rejected
+
+    valid_lm = cleaned[valid_idx]
+    cx = (valid_lm[:, :, 0].min(axis=1) + valid_lm[:, :, 0].max(axis=1)) / 2.0
+    cy = (valid_lm[:, :, 1].min(axis=1) + valid_lm[:, :, 1].max(axis=1)) / 2.0
+    sz = np.maximum(np.ptp(valid_lm[:, :, 0], axis=1), np.ptp(valid_lm[:, :, 1], axis=1))
+    med_sz = float(np.median(sz))
+
+    keep = (sz >= 0.35 * med_sz) & (sz <= 2.8 * med_sz)
+    if keep.sum() >= 3:
+        kept_pos = np.flatnonzero(keep)
+        half_win = min(7, len(kept_pos) // 2)
+        for rank, pos in enumerate(kept_pos):
+            lo = max(0, rank - half_win)
+            hi = min(len(kept_pos), rank + half_win + 1)
+            nbrs = kept_pos[lo:hi]
+            loc_cx = float(np.median(cx[nbrs]))
+            loc_cy = float(np.median(cy[nbrs]))
+            loc_sz = float(np.median(sz[nbrs]))
+            dist = float(np.hypot(cx[pos] - loc_cx, cy[pos] - loc_cy))
+            if dist > 1.0 * loc_sz or sz[pos] < 0.5 * loc_sz or sz[pos] > 2.0 * loc_sz:
+                keep[pos] = False
+
+    if keep.any():
+        bad = valid_idx[~keep]
+        if len(bad):
+            cleaned[bad] = np.nan
+            rejected += len(bad)
+    return cleaned, rejected
+
+
+def _smooth_1d(values, sigma=1.5):
+    arr = np.asarray(values, dtype=np.float64)
+    if len(arr) <= 1 or sigma <= 0.0:
+        return arr
+    radius = max(1, int(np.ceil(3.0 * sigma)))
+    grid = np.arange(-radius, radius + 1, dtype=np.float64)
+    kernel = np.exp(-0.5 * (grid / sigma) ** 2)
+    kernel /= kernel.sum()
+    padded = np.pad(arr, (radius, radius), mode="edge")
+    return np.convolve(padded, kernel, mode="valid")
+
+
+def _needs_stabilized_tracking(lm, box):
+    """Return True when a single static crop box would clip the face or bloat the edit mask."""
+    valid = np.isfinite(lm).all(axis=(1, 2))
+    if valid.sum() < 2:
+        return False
+    lm_v = lm[valid]
+    x0, y0, side = box
+    if side <= 0:
+        return True
+
+    face_h = lm_v[:, LM_CHIN, 1] - lm_v[:, LM_FOREHEAD, 1]
+    med_face_h = float(np.median(face_h))
+    min_nose_y = float(lm_v[:, LM_NOSE_BOTTOM, 1].min())
+    max_bottom_y = float(lm_v[:, LM_CHIN, 1].max()) + 0.1 * med_face_h
+    min_left_x = float(lm_v[:, LM_CHEEK_R, 0].min())
+    max_right_x = float(lm_v[:, LM_CHEEK_L, 0].max())
+
+    # 1. Static crop clips upper face/nose, chin, or cheeks.
+    if (
+        min_nose_y < y0 + 0.15 * side
+        or max_bottom_y > y0 + 0.98 * side
+        or min_left_x < x0 + 0.05 * side
+        or max_right_x > x0 + 0.95 * side
+    ):
+        return True
+
+    # 2. Union lower-face mask inflates significantly beyond a single frame's lower face
+    #    (which would expose neck/chest/background pixels inside the edit mask).
+    per_lh = (lm_v[:, LM_CHIN, 1] - lm_v[:, LM_NOSE_BOTTOM, 1]) + 0.1 * face_h
+    per_fw = lm_v[:, LM_CHEEK_L, 0] - lm_v[:, LM_CHEEK_R, 0]
+    med_lh = max(float(np.median(per_lh)), 1.0)
+    med_fw = max(float(np.median(per_fw)), 1.0)
+    if (max_bottom_y - min_nose_y) > 1.35 * med_lh or (max_right_x - min_left_x) > 1.40 * med_fw:
+        return True
+
+    # 3. Significant face scale change (e.g. leaning toward/away from camera).
+    sz = np.maximum(np.ptp(lm_v[:, :, 0], axis=1), np.ptp(lm_v[:, :, 1], axis=1))
+    if float(sz.max()) / max(float(sz.min()), 1.0) > 1.35:
+        return True
+
+    return False
+
+
+def _stabilized_edge_pad(lm, height, width):
+    """Extra border padding so edge-framed speakers stay centered in stabilized 512x512 crops."""
+    valid = np.isfinite(lm).all(axis=(1, 2))
+    if not valid.any():
+        return 0
+    lm_v = lm[valid]
+    cx = (lm_v[:, :, 0].min(axis=1) + lm_v[:, :, 0].max(axis=1)) / 2.0
+    cy = (lm_v[:, :, 1].min(axis=1) + lm_v[:, :, 1].max(axis=1)) / 2.0
+    sz = np.maximum(np.ptp(lm_v[:, :, 0], axis=1), np.ptp(lm_v[:, :, 1], axis=1))
+    half = sz * CROP_SCALE / 2.0
+    overshoot = float(
+        max(
+            0.0,
+            np.max(half - cx),
+            np.max(cx + half - width),
+            np.max(half - cy),
+            np.max(cy + half - height),
+            np.max((sz * CROP_SCALE - min(height, width)) / 2.0),
+        )
+    )
+    pad = int(np.ceil(overshoot)) + 1 if overshoot > 0.0 else 0
+    return pad if pad > 1 else 0
+
+
+def _stabilized_crop_boxes(lm, height, width, smooth_sigma=1.5):
+    """Build smooth per-frame face-centered crop boxes for videos with significant head motion."""
+    n = len(lm)
+    valid = np.isfinite(lm).all(axis=(1, 2))
+    v_idx = np.flatnonzero(valid).astype(np.float64)
+    idx = np.arange(n, dtype=np.float64)
+    lm_v = lm[valid]
+    cx_v = (lm_v[:, :, 0].min(axis=1) + lm_v[:, :, 0].max(axis=1)) / 2.0
+    cy_v = (lm_v[:, :, 1].min(axis=1) + lm_v[:, :, 1].max(axis=1)) / 2.0
+    sz_v = np.maximum(np.ptp(lm_v[:, :, 0], axis=1), np.ptp(lm_v[:, :, 1], axis=1))
+
+    cx = _smooth_1d(np.interp(idx, v_idx, cx_v), sigma=smooth_sigma)
+    cy = _smooth_1d(np.interp(idx, v_idx, cy_v), sigma=smooth_sigma)
+    sz = _smooth_1d(np.interp(idx, v_idx, sz_v), sigma=smooth_sigma)
+
+    max_side = min(height, width)
+    boxes = []
+    for t in range(n):
+        side = int(round(min(max(sz[t] * CROP_SCALE, 32.0), max_side)))
+        x0 = int(np.clip(round(cx[t] - side / 2.0), 0, width - side))
+        y0 = int(np.clip(round(cy[t] - side / 2.0), 0, height - side))
+        boxes.append((x0, y0, side))
+    return boxes
+
+
+def _stabilized_lower_face_mask(lm, boxes, feather):
+    """Compute a tight lower-face mask in stabilized 512x512 crop coordinates."""
+    valid_idx = np.flatnonzero(np.isfinite(lm).all(axis=(1, 2)))
+    key_indices = (LM_FOREHEAD, LM_NOSE_BOTTOM, LM_CHIN, LM_CHEEK_R, LM_CHEEK_L)
+    tops, bottoms, lefts, rights, face_hs = [], [], [], [], []
+    for t in valid_idx:
+        x0, y0, side = boxes[t]
+        s = SIZE / side
+        pts = (lm[t, key_indices] - np.array([x0, y0], dtype=np.float32)) * s
+        forehead_y, nose_y, chin_y, cheek_r_x, cheek_l_x = (
+            float(pts[0, 1]),
+            float(pts[1, 1]),
+            float(pts[2, 1]),
+            float(pts[3, 0]),
+            float(pts[4, 0]),
+        )
+        fh = max(chin_y - forehead_y, 1.0)
+        face_hs.append(fh)
+        tops.append(nose_y)
+        bottoms.append(chin_y + 0.1 * fh)
+        lefts.append(cheek_r_x)
+        rights.append(cheek_l_x)
+
+    l = int(round(min(lefts)))
+    t_top = int(round(min(tops)))
+    r = int(round(max(rights)))
+    b = int(round(max(bottoms)))
+    mask = np.zeros((SIZE, SIZE), np.uint8)
+    mask[max(t_top, 0):min(b, SIZE), max(l, 0):min(r, SIZE)] = 255
+    alpha = cv2.GaussianBlur(mask, (0, 0), feather).astype(np.float32) / 255
+    return mask, alpha
 
 
 def windows(n_frames, overlap=PAPER_OVERLAP, require_stride_multiple=False):
@@ -129,6 +329,7 @@ def dub_video(
     t_fps = FPS if stretch else fps
 
     lm, _ = detect_landmarks(frames)
+    lm, rejected = clean_landmark_track(lm, H, W)
     if not np.isfinite(lm).any():
         # MediaPipe's default detector can miss clear but relatively small
         # faces. Retry only complete misses so the standard path and benchmark
@@ -138,12 +339,15 @@ def dub_video(
             min_detection_confidence=0.05,
             min_tracking_confidence=0.1,
         )
+        lm, rejected = clean_landmark_track(lm, H, W)
         if not np.isfinite(lm).any():
             raise RuntimeError(_NO_FACE_ERROR)
         log(
             "default face detector missed all frames; "
             "using low-confidence FaceMesh fallback"
         )
+    if rejected:
+        log(f"filtered {rejected} outlier face-landmark frame(s)")
     paste_frame = _face_paste_mask(lm)
     if not paste_frame.all():
         log(
@@ -151,10 +355,18 @@ def dub_video(
             "(remaining frames will be passed through unchanged)"
         )
     # Tight shots (face*CROP_SCALE > frame): edge-pad so the face/crop ratio matches training.
-    face = np.nanmedian(np.maximum(np.ptp(lm[:, :, 0], 1), np.ptp(lm[:, :, 1], 1)))
+    face_sizes = np.maximum(np.ptp(lm[:, :, 0], 1), np.ptp(lm[:, :, 1], 1))
+    face = np.nanmedian(face_sizes)
     if not np.isfinite(face):
         raise RuntimeError("face landmark extent is not finite")
     pad = max(0, int(np.ceil((face * CROP_SCALE - min(H, W)) / 2)) + 1)
+    if pad <= 1:
+        pad = 0
+    use_stabilized = (not window_box) and _needs_stabilized_tracking(
+        lm + pad, crop_box(lm + pad, H + 2 * pad, W + 2 * pad)
+    )
+    if use_stabilized:
+        pad = max(pad, _stabilized_edge_pad(lm, H, W))
     if pad > 1:
         frames_p = np.pad(frames, ((0, 0), (pad, pad), (pad, pad), (0, 0)), mode="edge")
         lm = lm + pad
@@ -172,7 +384,16 @@ def dub_video(
         return cv2.resize(f[y0:y0 + side, x0:x0 + side], (SIZE, SIZE), interpolation=cv2.INTER_AREA)
 
     # Default: one crop box and one mask for the whole video, keeping the mouth region stable across windows.
-    box, mask, alpha = region(lm)
+    # When head motion would clip the crop or bloat the union mask onto neck/chest, track per frame.
+    frame_boxes = None
+    if use_stabilized:
+        frame_boxes = _stabilized_crop_boxes(lm, H + 2 * pad, W + 2 * pad)
+        box = frame_boxes[0]
+        mask, alpha = _stabilized_lower_face_mask(lm, frame_boxes, feather)
+        log("significant head motion detected; enabling stabilized per-frame face tracking")
+    else:
+        box, mask, alpha = region(lm)
+    box_for = (lambda idx: frame_boxes[idx]) if frame_boxes is not None else (lambda idx: box)
     effective_harmonize = harmonize
     if not window_box and effective_harmonize:
         try:
@@ -184,7 +405,7 @@ def dub_video(
     crop_output = None
     written = 0
     if not window_box:
-        source_crops = np.stack([crop(f, box) for f in frames_p])
+        source_crops = np.stack([crop(f, box_for(i)) for i, f in enumerate(frames_p)])
         crop_output = np.empty_like(source_crops)
     for window_index, start in enumerate(starts):
         window_has_face = bool(paste_frame[start:start + NUM_FRAMES].any())
@@ -200,10 +421,12 @@ def dub_video(
                 crops = np.stack([
                     crop(f, box) for f in frames_p[start:start + NUM_FRAMES]
                 ])
+                ref_box = box
             else:
                 crops = source_crops[start:start + NUM_FRAMES]
+                ref_box = box_for(ref_idx)
             if window_has_face:
-                clip = {"frames": crops, "mask": mask > 127, "ref": crop(frames_p[ref_idx], box), "prompt": prompt}
+                clip = {"frames": crops, "mask": mask > 127, "ref": crop(frames_p[ref_idx], ref_box), "prompt": prompt}
                 sample_start = round(start / t_fps * SR)
                 sample_count = round(NUM_FRAMES / t_fps * SR)
                 a = audio[sample_start:sample_start + sample_count]
@@ -265,7 +488,7 @@ def dub_video(
         for index, generated in enumerate(crop_output):
             if paste_frame[index]:
                 out[index] = paste_back(
-                    frames_p[index], generated, box, paste_alpha)
+                    frames_p[index], generated, box_for(index), paste_alpha)
     return out[:, pad:pad + H, pad:pad + W]
 
 
@@ -429,6 +652,7 @@ def dub_video_stream(
     t_fps = FPS if stretch else fps
 
     lm, _ = detect_landmarks_iter(frame_source.iter_chunks(), n, H, W)
+    lm, rejected = clean_landmark_track(lm, H, W)
     if not np.isfinite(lm).any():
         lm, _ = detect_landmarks_iter(
             frame_source.iter_chunks(),
@@ -438,22 +662,33 @@ def dub_video_stream(
             min_detection_confidence=0.05,
             min_tracking_confidence=0.1,
         )
+        lm, rejected = clean_landmark_track(lm, H, W)
         if not np.isfinite(lm).any():
             raise RuntimeError(_NO_FACE_ERROR)
         log(
             "default face detector missed all frames; "
             "using low-confidence FaceMesh fallback"
         )
+    if rejected:
+        log(f"filtered {rejected} outlier face-landmark frame(s)")
     paste_frame = _face_paste_mask(lm)
     if not paste_frame.all():
         log(
             f"face detected on {int(paste_frame.sum())}/{n} frames "
             "(remaining frames will be passed through unchanged)"
         )
-    face = np.nanmedian(np.maximum(np.ptp(lm[:, :, 0], 1), np.ptp(lm[:, :, 1], 1)))
+    face_sizes = np.maximum(np.ptp(lm[:, :, 0], 1), np.ptp(lm[:, :, 1], 1))
+    face = np.nanmedian(face_sizes)
     if not np.isfinite(face):
         raise RuntimeError("face landmark extent is not finite")
     pad = max(0, int(np.ceil((face * CROP_SCALE - min(H, W)) / 2)) + 1)
+    if pad <= 1:
+        pad = 0
+    use_stabilized = (not window_box) and _needs_stabilized_tracking(
+        lm + pad, crop_box(lm + pad, H + 2 * pad, W + 2 * pad)
+    )
+    if use_stabilized:
+        pad = max(pad, _stabilized_edge_pad(lm, H, W))
     if pad > 1:
         lm = lm + pad
     else:
@@ -475,9 +710,17 @@ def dub_video_stream(
         return cv2.resize(f[y0:y0 + side, x0:x0 + side], (SIZE, SIZE), interpolation=cv2.INTER_AREA)
 
     effective_harmonize = harmonize
+    frame_boxes = None
     if not window_box:
-        box, mask, alpha = region(lm)
-        ref_crop = crop(ref_padded, box)
+        if use_stabilized:
+            frame_boxes = _stabilized_crop_boxes(lm, H + 2 * pad, W + 2 * pad)
+            box = frame_boxes[0]
+            mask, alpha = _stabilized_lower_face_mask(lm, frame_boxes, feather)
+            log("significant head motion detected; enabling stabilized per-frame face tracking")
+        else:
+            box, mask, alpha = region(lm)
+        box_for = (lambda idx: frame_boxes[idx]) if frame_boxes is not None else (lambda idx: box)
+        ref_crop = crop(ref_padded, box_for(ref_idx))
         if effective_harmonize:
             try:
                 skin_anchor_mask(mask > 127, harmonization_config or HarmonizationConfig())
@@ -525,7 +768,12 @@ def dub_video_stream(
             if window_box:
                 box, mask, alpha = region(lm[start:end])
                 ref_crop = crop(ref_padded, box)
-            crops = np.stack([crop(f, box) for f in window_frames])
+                crops = np.stack([crop(f, box) for f in window_frames])
+            else:
+                crops = np.stack([
+                    crop(f, box_for(start + offset))
+                    for offset, f in enumerate(window_frames)
+                ])
             if window_has_face:
                 clip = {
                     "frames": crops,
@@ -610,7 +858,7 @@ def dub_video_stream(
                     pasted = pasted_buf[offset]
                 elif paste_frame[buf_start + offset]:
                     pasted = paste_back(
-                        src_buf[offset], crop_buf[offset], box, paste_alpha
+                        src_buf[offset], crop_buf[offset], box_for(buf_start + offset), paste_alpha
                     )
                 else:
                     pasted = src_buf[offset]

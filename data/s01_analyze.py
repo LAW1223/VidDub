@@ -47,7 +47,54 @@ def load_syncnet(device):
     return net
 
 
-def _detect_face_via_full_range_roi(frame, width, height, full_range_detector, roi_mesh):
+def _is_valid_face_landmarks(pts, width, height):
+    """Reject collapsed, inverted, or out-of-frame MediaPipe landmark hallucinations."""
+    if pts is None or pts.shape != (468, 2) or not np.isfinite(pts).all():
+        return False
+    forehead_y = float(pts[LM_FOREHEAD, 1])
+    nose_y = float(pts[2, 1])  # LM_NOSE_BOTTOM
+    chin_y = float(pts[LM_CHIN, 1])
+    cheek_r_x = float(pts[LM_CHEEK_R, 0])
+    cheek_l_x = float(pts[LM_CHEEK_L, 0])
+    face_h = chin_y - forehead_y
+    face_w = cheek_l_x - cheek_r_x
+    if face_h < 16.0 or face_w < 12.0:
+        return False
+    if not (forehead_y < nose_y < chin_y):
+        return False
+    ratio = face_w / face_h
+    if not (0.30 <= ratio <= 2.4):
+        return False
+    cx = float((pts[:, 0].min() + pts[:, 0].max()) / 2.0)
+    cy = float((pts[:, 1].min() + pts[:, 1].max()) / 2.0)
+    return 0.0 <= cx <= width and 0.0 <= cy <= height
+
+
+def _select_face_candidate(faces, prev_center=None):
+    """Select the primary face; stay locked to the previous track when multiple faces exist."""
+    if len(faces) == 1 or prev_center is None:
+        return max(faces, key=lambda a: np.ptp(a[:, 1]))
+    px, py, psize = prev_center
+    best = None
+    best_dist = float("inf")
+    for face in faces:
+        cx = float((face[:, 0].min() + face[:, 0].max()) / 2.0)
+        cy = float((face[:, 1].min() + face[:, 1].max()) / 2.0)
+        size = float(max(np.ptp(face[:, 0]), np.ptp(face[:, 1])))
+        if size < 0.4 * psize or size > 2.5 * psize:
+            continue
+        dist = float(np.hypot(cx - px, cy - py))
+        if dist < best_dist:
+            best_dist = dist
+            best = face
+    if best is not None and best_dist <= 1.5 * psize:
+        return best
+    return max(faces, key=lambda a: np.ptp(a[:, 1]))
+
+
+def _detect_face_via_full_range_roi(
+    frame, width, height, full_range_detector, roi_mesh, prev_center=None
+):
     """Fallback for wide/medium shots where short-range FaceMesh misses smaller faces."""
     det_res = full_range_detector.process(frame)
     detections = det_res.detections or []
@@ -64,7 +111,20 @@ def _detect_face_via_full_range_roi(frame, width, height, full_range_detector, r
         cx = float(np.clip((bb.xmin + bb.width / 2.0) * width, 0.0, width))
         cy = float(np.clip((bb.ymin + bb.height / 2.0) * height, 0.0, height))
         candidates.append((bw * bh, cx, cy, bw, bh))
-    candidates.sort(key=lambda item: item[0], reverse=True)
+    if not candidates:
+        return None, 0
+
+    if prev_center is not None and len(candidates) > 1:
+        px, py, psize = prev_center
+        candidates.sort(
+            key=lambda item: (
+                0 if np.hypot(item[1] - px, item[2] - py) <= 1.5 * psize else 1,
+                np.hypot(item[1] - px, item[2] - py),
+                -item[0],
+            )
+        )
+    else:
+        candidates.sort(key=lambda item: item[0], reverse=True)
 
     for _, cx, cy, bw, bh in candidates:
         side = min(max(int(round(max(bw, bh) * 2.5)), 64), width, height)
@@ -86,8 +146,27 @@ def _detect_face_via_full_range_roi(frame, width, height, full_range_detector, r
                 ],
                 dtype=np.float32,
             )
+            if not _is_valid_face_landmarks(pts, width, height):
+                continue
+            pts_cx = float((pts[:, 0].min() + pts[:, 0].max()) / 2.0)
+            pts_cy = float((pts[:, 1].min() + pts[:, 1].max()) / 2.0)
+            if np.hypot(pts_cx - cx, pts_cy - cy) > 0.75 * max(bw, bh):
+                continue
             return pts, len(candidates)
     return None, 0
+
+
+def _matches_track(pts, prev_center):
+    """Return True when a candidate face is spatially and scale-consistent with prev_center."""
+    if pts is None or prev_center is None:
+        return False
+    px, py, psize = prev_center
+    cx = float((pts[:, 0].min() + pts[:, 0].max()) / 2.0)
+    cy = float((pts[:, 1].min() + pts[:, 1].max()) / 2.0)
+    size = float(max(np.ptp(pts[:, 0]), np.ptp(pts[:, 1])))
+    if size < 0.45 * psize or size > 2.2 * psize:
+        return False
+    return float(np.hypot(cx - px, cy - py)) <= 1.5 * psize
 
 
 def detect_landmarks_iter(
@@ -102,6 +181,7 @@ def detect_landmarks_iter(
     lm = np.full((num_frames, 468, 2), np.nan, dtype=np.float32)
     nfaces = np.zeros(num_frames, dtype=np.int8)
     t = 0
+    prev_center = None
     full_range_detector = None
     roi_mesh = None
     try:
@@ -113,15 +193,27 @@ def detect_landmarks_iter(
         ) as face_mesh:
             for chunk in frame_chunks:
                 for frame in chunk:
+                    pts = None
+                    count = 0
                     res = face_mesh.process(frame)
                     if res.multi_face_landmarks:
-                        nfaces[t] = len(res.multi_face_landmarks)
                         faces = [
-                            np.array([(p.x * width, p.y * height) for p in f.landmark[:468]])
+                            np.array(
+                                [(p.x * width, p.y * height) for p in f.landmark[:468]],
+                                dtype=np.float32,
+                            )
                             for f in res.multi_face_landmarks
                         ]
-                        lm[t] = max(faces, key=lambda a: np.ptp(a[:, 1]))  # largest face
-                    elif full_range_fallback:
+                        valid_faces = [
+                            f for f in faces if _is_valid_face_landmarks(f, width, height)
+                        ]
+                        if valid_faces:
+                            pts = _select_face_candidate(valid_faces, prev_center)
+                            count = len(valid_faces)
+                    needs_fallback = pts is None or (
+                        prev_center is not None and not _matches_track(pts, prev_center)
+                    )
+                    if needs_fallback and full_range_fallback:
                         if full_range_detector is None:
                             full_range_detector = mp.solutions.face_detection.FaceDetection(
                                 model_selection=1,
@@ -132,12 +224,25 @@ def detect_landmarks_iter(
                                 max_num_faces=1,
                                 min_detection_confidence=min(min_detection_confidence, 0.2),
                             )
-                        pts, count = _detect_face_via_full_range_roi(
-                            frame, width, height, full_range_detector, roi_mesh
+                        roi_pts, roi_count = _detect_face_via_full_range_roi(
+                            frame,
+                            width,
+                            height,
+                            full_range_detector,
+                            roi_mesh,
+                            prev_center=prev_center,
                         )
-                        if pts is not None:
-                            lm[t] = pts
-                            nfaces[t] = min(count, 127)
+                        if pts is None or (
+                            roi_pts is not None and _matches_track(roi_pts, prev_center)
+                        ):
+                            pts, count = roi_pts, roi_count
+                    if pts is not None:
+                        lm[t] = pts
+                        nfaces[t] = min(count, 127)
+                        cx = float((pts[:, 0].min() + pts[:, 0].max()) / 2.0)
+                        cy = float((pts[:, 1].min() + pts[:, 1].max()) / 2.0)
+                        psize = float(max(np.ptp(pts[:, 0]), np.ptp(pts[:, 1])))
+                        prev_center = (cx, cy, psize)
                     t += 1
     finally:
         if full_range_detector is not None:

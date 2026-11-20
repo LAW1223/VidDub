@@ -559,7 +559,10 @@ class StreamingInferenceEquivalenceTests(unittest.TestCase):
         )
         fake_landmarks = [types.SimpleNamespace(x=0.5, y=0.5) for _ in range(468)]
         fake_landmarks[10] = types.SimpleNamespace(x=0.5, y=0.3)
+        fake_landmarks[2] = types.SimpleNamespace(x=0.5, y=0.48)
         fake_landmarks[152] = types.SimpleNamespace(x=0.5, y=0.7)
+        fake_landmarks[234] = types.SimpleNamespace(x=0.32, y=0.5)
+        fake_landmarks[454] = types.SimpleNamespace(x=0.68, y=0.5)
 
         class _FakeDetector:
             def __init__(self, detections):
@@ -596,6 +599,245 @@ class StreamingInferenceEquivalenceTests(unittest.TestCase):
         )
         self.assertIsNone(none_pts)
         self.assertEqual(zero_count, 0)
+
+    def test_clean_landmark_track_rejects_outliers_without_corrupting_motion(self):
+        num_frames = 100
+        lm, _ = self._synthetic_landmarks(num_frames, 1088, 1920, 130.0)
+        # Smooth real downward lean of 140 px across the clip
+        shifts = np.linspace(0.0, 140.0, num_frames, dtype=np.float32)
+        lm[:, :, 1] += shifts[:, None]
+        # Inject three outlier frames: poster jump, chest jump, inverted face
+        lm[15, :, 0] += 550.0
+        lm[15, :, 1] -= 300.0
+        lm[50, :, 1] += 320.0
+        lm[80, 152, 1] = lm[80, 10, 1] - 20.0  # chin above forehead
+
+        cleaned, rejected = inference.clean_landmark_track(lm, 1088, 1920)
+        self.assertEqual(rejected, 3)
+        self.assertFalse(np.isfinite(cleaned[15]).any())
+        self.assertFalse(np.isfinite(cleaned[50]).any())
+        self.assertFalse(np.isfinite(cleaned[80]).any())
+        # Legitimate smooth leaning frames remain intact
+        self.assertTrue(np.isfinite(cleaned[0]).all())
+        self.assertTrue(np.isfinite(cleaned[99]).all())
+
+    def test_stabilized_tracking_follows_moving_speaker_in_memory_and_streaming(self):
+        rng = np.random.default_rng(999)
+        num_frames = 140
+        H, W = 720, 960
+        frames = rng.integers(40, 200, size=(num_frames, H, W, 3), dtype=np.uint8)
+        audio = np.zeros(int(num_frames / 24.0 * 16000), dtype=np.float32)
+
+        # Stationary clip should NOT trigger stabilized tracking
+        static_lm, _ = self._synthetic_landmarks(num_frames, H, W, 140.0)
+        static_box = inference.crop_box(static_lm, H, W)
+        self.assertFalse(inference._needs_stabilized_tracking(static_lm, static_box))
+
+        # Moving clip: speaker leans down 150 px and closer (+30% scale)
+        moving_lm = np.full((num_frames, 468, 2), np.nan, dtype=np.float32)
+        for t in range(num_frames):
+            frac = t / (num_frames - 1)
+            cx = W * 0.5 + 40.0 * np.sin(2.0 * np.pi * frac)
+            cy = 240.0 + 150.0 * frac
+            half = (120.0 + 36.0 * frac) / 2.0
+            moving_lm[t, :, 0] = cx
+            moving_lm[t, :, 1] = cy
+            moving_lm[t, 234, 0] = cx - half
+            moving_lm[t, 454, 0] = cx + half
+            moving_lm[t, 10, 1] = cy - half
+            moving_lm[t, 152, 1] = cy + half
+            moving_lm[t, 2, 1] = cy - 0.1 * half
+            moving_lm[t, 13, 1] = cy + 0.1 * half
+            moving_lm[t, 14, 1] = cy + 0.25 * half
+        moving_nf = np.ones(num_frames, dtype=np.int8)
+        self.assertTrue(
+            inference._needs_stabilized_tracking(
+                moving_lm, inference.crop_box(moving_lm, H, W)
+            )
+        )
+
+        # Fake sampler modifies every pixel inside the edit mask noticeably
+        def mark_mask_sampler(pipe, whisper, adapter, zero_latents, clip, window_audio,
+                              steps=2, audio_cfg=1.0, seed=0, fps=24):
+            gen = clip["frames"].copy()
+            m = clip["mask"]
+            gen[:, m] = np.clip(gen[:, m].astype(np.int16) + 40, 0, 255).astype(np.uint8)
+            return gen
+
+        models = (None, None, None, None)
+        logs_mem, logs_stream = [], []
+        with mock.patch.object(
+            inference, "detect_landmarks", return_value=(moving_lm.copy(), moving_nf.copy())
+        ), mock.patch.object(
+            inference, "detect_landmarks_iter", return_value=(moving_lm.copy(), moving_nf.copy())
+        ):
+            out_mem = inference.dub_video(
+                models,
+                frames,
+                audio,
+                steps=2,
+                seed=1,
+                overlap=17,
+                harmonize=False,
+                log=logs_mem.append,
+                sample_fn=mark_mask_sampler,
+            )
+            writer = _MemoryWriter()
+            written = inference.dub_video_stream(
+                models,
+                _DummyFrameSource(frames, chunk_size=31),
+                audio,
+                writer,
+                steps=2,
+                seed=1,
+                overlap=17,
+                harmonize=False,
+                log=logs_stream.append,
+                sample_fn=mark_mask_sampler,
+            )
+
+        self.assertEqual(written, num_frames)
+        self.assertTrue(np.array_equal(out_mem, writer.result()))
+        self.assertTrue(any("stabilized per-frame face tracking" in msg for msg in logs_mem))
+        self.assertTrue(any("stabilized per-frame face tracking" in msg for msg in logs_stream))
+
+        # Verify on frame 0 (top position) and frame -1 (bottom position) that ONLY
+        # the real lower face was edited — never the chest far below frame 0's chin!
+        for t in (0, num_frames // 2, num_frames - 1):
+            diff = np.abs(out_mem[t].astype(np.float32) - frames[t].astype(np.float32)).mean(axis=2)
+            ys, _ = np.nonzero(diff > 10.0)
+            self.assertGreater(len(ys), 100)
+            chin_y = float(moving_lm[t, 152, 1])
+            nose_y = float(moving_lm[t, 2, 1])
+            face_h = float(moving_lm[t, 152, 1] - moving_lm[t, 10, 1])
+            # Must not paint onto chest below chin + generous feather margin
+            self.assertLess(ys.max(), chin_y + 0.35 * face_h)
+            # Must cover near nose_y (upper mouth not clipped off)
+            self.assertLess(ys.min(), nose_y + 0.15 * face_h)
+
+    def test_full_frame_mesh_hallucination_overridden_by_full_range_roi(self):
+        import types
+        from data import s01_analyze
+
+        H, W = 1088, 1920
+        frames = np.zeros((3, H, W, 3), dtype=np.uint8)
+
+        def make_norm_face(cx_px, cy_px, size_px, span_w, span_h):
+            half = size_px / 2.0
+            pts = np.tile(np.array([cx_px, cy_px], dtype=np.float32), (468, 1))
+            pts[234, 0] = cx_px - half * 0.8
+            pts[454, 0] = cx_px + half * 0.8
+            pts[10, 1] = cy_px - half
+            pts[152, 1] = cy_px + half
+            pts[2, 1] = cy_px - half * 0.05
+            pts[13, 1] = cy_px + half * 0.15
+            pts[14, 1] = cy_px + half * 0.30
+            return types.SimpleNamespace(
+                landmark=[
+                    types.SimpleNamespace(x=float(p[0] / span_w), y=float(p[1] / span_h))
+                    for p in pts
+                ]
+            )
+
+        # Frame 0: FaceMesh misses -> ROI finds real 120px face at (960, 540).
+        # Frame 1: FaceMesh hallucinates a giant 390px face at (1050, 740) on chest ->
+        #          full-range ROI must override it back to the real face at (962, 544)!
+        # Frame 2: FaceMesh misses -> ROI finds real 120px face at (964, 548).
+        full_mesh_calls = [0]
+
+        class _FakeFaceMesh:
+            def __init__(self, static_image_mode=False, **kwargs):
+                self.static = static_image_mode
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def close(self):
+                pass
+
+            def process(self, img):
+                if not self.static:
+                    idx = full_mesh_calls[0]
+                    full_mesh_calls[0] += 1
+                    if idx == 1:
+                        return types.SimpleNamespace(
+                            multi_face_landmarks=[make_norm_face(1050.0, 740.0, 390.0, W, H)]
+                        )
+                    return types.SimpleNamespace(multi_face_landmarks=None)
+                ih, iw = img.shape[:2]
+                return types.SimpleNamespace(
+                    multi_face_landmarks=[make_norm_face(iw * 0.5, ih * 0.5, 120.0, iw, ih)]
+                )
+
+        roi_calls = [0]
+
+        class _FakeFaceDetection:
+            def __init__(self, **kwargs):
+                pass
+
+            def close(self):
+                pass
+
+            def process(self, img):
+                idx = roi_calls[0]
+                roi_calls[0] += 1
+                cx = (960.0 + 2.0 * idx) / W
+                cy = (540.0 + 4.0 * idx) / H
+                bw, bh = 120.0 / W, 120.0 / H
+                bb = types.SimpleNamespace(xmin=cx - bw / 2, ymin=cy - bh / 2, width=bw, height=bh)
+                return types.SimpleNamespace(
+                    detections=[
+                        types.SimpleNamespace(
+                            location_data=types.SimpleNamespace(relative_bounding_box=bb)
+                        )
+                    ]
+                )
+
+        with mock.patch.object(
+            s01_analyze.mp.solutions.face_mesh, "FaceMesh", _FakeFaceMesh
+        ), mock.patch.object(
+            s01_analyze.mp.solutions.face_detection, "FaceDetection", _FakeFaceDetection
+        ):
+            lm, nfaces = s01_analyze.detect_landmarks_iter([frames], 3, H, W)
+
+        self.assertTrue(np.isfinite(lm).all())
+        self.assertTrue((nfaces == 1).all())
+        # Frame 1 must match the real face (~544), NOT the 390px chest hallucination (~740)
+        for t in range(3):
+            cy = float((lm[t, :, 1].min() + lm[t, :, 1].max()) / 2.0)
+            sz = float(max(np.ptp(lm[t, :, 0]), np.ptp(lm[t, :, 1])))
+            self.assertAlmostEqual(cy, 540.0 + 4.0 * t, delta=4.0)
+            self.assertAlmostEqual(sz, 120.0, delta=6.0)
+
+    def test_stabilized_edge_pad_keeps_edge_framed_moving_speaker_centered(self):
+        # Vertical 9:16 video where speaker starts very near the top edge (cy=90, face_h=160 ->
+        # cy - side/2 = 90 - 144 = -54 < 0) and moves down 180 px.
+        H, W, T = 1280, 720, 90
+        lm = np.full((T, 468, 2), np.nan, dtype=np.float32)
+        for t in range(T):
+            cx = W * 0.5
+            cy = 90.0 + 180.0 * (t / (T - 1))
+            half = 80.0
+            lm[t, :, 0] = cx
+            lm[t, :, 1] = cy
+            lm[t, 234, 0] = cx - half
+            lm[t, 454, 0] = cx + half
+            lm[t, 10, 1] = cy - half
+            lm[t, 152, 1] = cy + half
+            lm[t, 2, 1] = cy - 0.1 * half
+            lm[t, 13, 1] = cy + 0.1 * half
+            lm[t, 14, 1] = cy + 0.25 * half
+
+        pad = inference._stabilized_edge_pad(lm, H, W)
+        self.assertGreaterEqual(pad, 54)
+        boxes = inference._stabilized_crop_boxes(lm + pad, H + 2 * pad, W + 2 * pad)
+        mask, _ = inference._stabilized_lower_face_mask(lm + pad, boxes, feather=15)
+        ys = np.nonzero(mask > 127)[0]
+        # Mask height in 512x512 crop space must stay tight (~0.6 * 512/1.8 ≈ 170 px), never bloated
+        self.assertLess(int(ys.max() - ys.min()), 210)
 
 
 if __name__ == "__main__":
