@@ -285,6 +285,105 @@ class DecordFrameSource:
         return self.reader[int(index)].asnumpy()
 
 
+def resolve_padding_frames(lead_in_seconds=0.0, lead_out_seconds=0.0, fps=FPS):
+    """Validate lead-in / lead-out durations (seconds) and convert to frame counts."""
+    lead_in = float(lead_in_seconds)
+    lead_out = float(lead_out_seconds)
+    fps_value = float(fps)
+    if not np.isfinite(lead_in) or lead_in < 0.0:
+        raise ValueError(
+            f"lead_in_seconds must be a finite non-negative number; got {lead_in_seconds}"
+        )
+    if not np.isfinite(lead_out) or lead_out < 0.0:
+        raise ValueError(
+            f"lead_out_seconds must be a finite non-negative number; got {lead_out_seconds}"
+        )
+    if not np.isfinite(fps_value) or fps_value <= 0.0:
+        raise ValueError(f"fps must be positive; got {fps}")
+    return int(round(lead_in * fps_value)), int(round(lead_out * fps_value))
+
+
+class PaddedFrameSource:
+    """Hold-edge frame-source wrapper for lead-in / lead-out silence padding."""
+
+    def __init__(self, source, lead_in_frames=0, lead_out_frames=0):
+        self.source = source
+        self.lead_in_frames = int(lead_in_frames)
+        self.lead_out_frames = int(lead_out_frames)
+        if self.lead_in_frames < 0 or self.lead_out_frames < 0:
+            raise ValueError("lead_in_frames and lead_out_frames must be non-negative")
+        self.chunk_size = int(getattr(source, "chunk_size", 64))
+        self.num_frames = source.num_frames + self.lead_in_frames + self.lead_out_frames
+        self.height = source.height
+        self.width = source.width
+
+    def _yield_repeated(self, frame, count):
+        remaining = count
+        while remaining > 0:
+            batch = min(remaining, self.chunk_size)
+            yield np.repeat(frame[None], batch, axis=0)
+            remaining -= batch
+
+    def iter_chunks(self):
+        if self.lead_in_frames > 0:
+            first = self.source.get_frame(0)
+            yield from self._yield_repeated(first, self.lead_in_frames)
+        last = None
+        for chunk in self.source.iter_chunks():
+            if len(chunk) > 0:
+                last = chunk[-1]
+            yield chunk
+        if self.lead_out_frames > 0:
+            if last is None:
+                last = self.source.get_frame(self.source.num_frames - 1)
+            yield from self._yield_repeated(last, self.lead_out_frames)
+
+    def get_frame(self, index):
+        index = int(index)
+        if index < 0 or index >= self.num_frames:
+            raise IndexError(
+                f"frame index {index} out of range for {self.num_frames} frames"
+            )
+        src_index = min(max(index - self.lead_in_frames, 0), self.source.num_frames - 1)
+        return self.source.get_frame(src_index)
+
+
+class TrimmingFrameWriter:
+    """Drop lead-in / lead-out padded frames before forwarding to an underlying writer."""
+
+    def __init__(self, writer, skip_start=0, keep_frames=None):
+        self.writer = writer
+        self.skip_start = int(skip_start)
+        self.keep_frames = None if keep_frames is None else int(keep_frames)
+        if self.skip_start < 0:
+            raise ValueError("skip_start must be non-negative")
+        if self.keep_frames is not None and self.keep_frames < 0:
+            raise ValueError("keep_frames must be non-negative")
+        self.seen = 0
+        self.written = 0
+
+    def write(self, frames):
+        count = len(frames)
+        if count == 0:
+            return
+        chunk_start = self.seen
+        chunk_end = chunk_start + count
+        self.seen = chunk_end
+
+        keep_start = self.skip_start
+        keep_end = (
+            chunk_end
+            if self.keep_frames is None
+            else self.skip_start + self.keep_frames
+        )
+        lo = max(chunk_start, keep_start)
+        hi = min(chunk_end, keep_end)
+        if hi > lo:
+            sliced = frames[lo - chunk_start:hi - chunk_start]
+            self.writer.write(sliced)
+            self.written += len(sliced)
+
+
 def dub_video_stream(
     models,
     frame_source,

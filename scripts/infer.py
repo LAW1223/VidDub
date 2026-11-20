@@ -22,7 +22,8 @@ def import_runtime():
     global CausalConfig, CausalWanDub, autocast, rollout, schedule
     global DubAudioAdapter, HarmonizationConfig, full_context_runtime, FPS, SR, ZeroLatents
     global Mp4StreamWriter, build_inputs, load_models, to_video_tensor, write_mp4
-    global DecordFrameSource, dub_video, dub_video_stream
+    global DecordFrameSource, PaddedFrameSource, TrimmingFrameWriter
+    global dub_video, dub_video_stream, resolve_padding_frames
 
     import librosa
     import numpy as np
@@ -38,7 +39,8 @@ def import_runtime():
     # Import inference/mediapipe/torch before decord so decord's bundled VC++
     # runtime on Windows does not shadow the newer runtime expected by mediapipe.
     from viddub.full_context.inference import (
-        DecordFrameSource, dub_video, dub_video_stream,
+        DecordFrameSource, PaddedFrameSource, TrimmingFrameWriter,
+        dub_video, dub_video_stream, resolve_padding_frames,
     )
     from viddub.full_context import runtime as full_context_runtime
     from viddub.full_context.runtime import (
@@ -215,7 +217,8 @@ def load_inference_runtime(model, weight_root, device="cuda", revision=None,
 
 
 def infer_file(runtime, video, audio, output, seed=0, mode="auto", overlap=17,
-               feather=15, harmonize=True, chroma_field_strength=None):
+               feather=15, harmonize=True, chroma_field_strength=None,
+               lead_in_seconds=0.0, lead_out_seconds=0.0):
     """Run one media pair with an already loaded inference runtime."""
     video = str(video)
     audio = str(audio)
@@ -229,26 +232,58 @@ def infer_file(runtime, video, audio, output, seed=0, mode="auto", overlap=17,
     reader = decord.VideoReader(video, num_threads=2)
     fps = float(reader.get_avg_fps())
     num_frames = len(reader)
+    lead_in_frames, lead_out_frames = resolve_padding_frames(
+        lead_in_seconds, lead_out_seconds, fps=fps
+    )
+    has_padding = bool(lead_in_frames or lead_out_frames)
+    if mode == "clip" and has_padding:
+        raise ValueError(
+            "lead_in_seconds and lead_out_seconds cannot be used with --mode clip; "
+            "use --mode auto or --mode windowed"
+        )
     waveform = librosa.load(audio, sr=SR, mono=True)[0]
     audio_samples = round(num_frames / fps * SR)
     waveform = np.pad(
         waveform[:audio_samples],
         (0, max(0, audio_samples - len(waveform))),
     )
+    if has_padding:
+        lead_in_samples = round(lead_in_frames / fps * SR)
+        lead_out_samples = round(lead_out_frames / fps * SR)
+        infer_waveform = np.pad(
+            waveform, (lead_in_samples, lead_out_samples), mode="constant"
+        )
+    else:
+        infer_waveform = waveform
     output.parent.mkdir(parents=True, exist_ok=True)
     audio_cfg = float(runtime.get("audio_cfg", 1.0))
-    if num_frames <= 162:
+    padded_num_frames = num_frames + lead_in_frames + lead_out_frames
+    if padded_num_frames <= 162:
         frames = reader[:].asnumpy()
+        if has_padding:
+            frames = np.pad(
+                frames,
+                ((lead_in_frames, lead_out_frames), (0, 0), (0, 0), (0, 0)),
+                mode="edge",
+            )
         generated = dub_video(
-            runtime["models"], frames, waveform,
+            runtime["models"], frames, infer_waveform,
             steps=runtime["steps"], audio_cfg=audio_cfg, feather=feather, seed=seed,
             fps=fps, overlap=overlap, mode=mode, harmonize=harmonize,
             sample_fn=runtime["sample_fn"],
             harmonization_config=harmonization_config,
         )
+        if has_padding:
+            generated = generated[lead_in_frames:lead_in_frames + num_frames]
         write_mp4(output, generated, waveform, fps=fps)
     else:
         frame_source = DecordFrameSource(reader)
+        if has_padding:
+            frame_source = PaddedFrameSource(
+                frame_source,
+                lead_in_frames=lead_in_frames,
+                lead_out_frames=lead_out_frames,
+            )
         with Mp4StreamWriter(
             output,
             frame_source.width,
@@ -256,11 +291,18 @@ def infer_file(runtime, video, audio, output, seed=0, mode="auto", overlap=17,
             audio=waveform,
             fps=fps,
         ) as writer:
+            target_writer = (
+                TrimmingFrameWriter(
+                    writer, skip_start=lead_in_frames, keep_frames=num_frames
+                )
+                if has_padding
+                else writer
+            )
             dub_video_stream(
                 runtime["models"],
                 frame_source,
-                waveform,
-                writer,
+                infer_waveform,
+                target_writer,
                 steps=runtime["steps"],
                 audio_cfg=audio_cfg,
                 feather=feather,
@@ -272,6 +314,11 @@ def infer_file(runtime, video, audio, output, seed=0, mode="auto", overlap=17,
                 sample_fn=runtime["sample_fn"],
                 harmonization_config=harmonization_config,
             )
+            if has_padding and target_writer.written != num_frames:
+                raise RuntimeError(
+                    f"trimmed stream wrote {target_writer.written} frames, "
+                    f"expected {num_frames}"
+                )
     return output
 
 
@@ -301,6 +348,12 @@ def main():
     parser.add_argument(
         "--chroma-field-strength", type=float, default=None,
         help="spatial chroma strength for color harmonization in [0, 1] (default: 0.90)")
+    parser.add_argument(
+        "--lead-in-seconds", type=float, default=0.0,
+        help="silence + held-first-frame padding prepended before dubbing and trimmed from the output (seconds)")
+    parser.add_argument(
+        "--lead-out-seconds", type=float, default=0.0,
+        help="silence + held-last-frame padding appended before dubbing and trimmed from the output (seconds)")
     parser.add_argument("--feather", type=int, default=15)
     parser.add_argument("--sft-steps", type=int,
                         help="Override SFT sampling steps; default from config")
@@ -326,6 +379,8 @@ def main():
         feather=args.feather,
         harmonize=not args.no_color_harmonization,
         chroma_field_strength=args.chroma_field_strength,
+        lead_in_seconds=args.lead_in_seconds,
+        lead_out_seconds=args.lead_out_seconds,
     )
     print(f"Wrote {args.output}")
 

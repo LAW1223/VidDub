@@ -194,7 +194,11 @@ frame rate and resolution, and long videos (>162 frames) stream sequentially
 through FFmpeg instead of buffering the full video in RAM. The reported Long-20 setting uses 25 FPS inputs;
 other frame rates retain their native frame timing and are not the exact
 Long-20 benchmark protocol. Color harmonization is enabled by default and can
-be disabled for ablation with `--no-color-harmonization`.
+be tuned with `--chroma-field-strength` (0.0–1.0, default 0.90) or disabled for
+ablation with `--no-color-harmonization`. If the opening or closing frames show
+a brief transition blur, `--lead-in-seconds` and `--lead-out-seconds` (e.g.
+`0.5`) prepend/append silence with held edge frames during inference and trim
+them back out so the final video keeps the original length and audio sync.
 
 The released full-context model fixes inference to two denoising steps.
 Incompatible architecture overrides are rejected.

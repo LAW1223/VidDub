@@ -374,6 +374,173 @@ class StreamingInferenceEquivalenceTests(unittest.TestCase):
             self.assertEqual(len(decord.VideoReader(str(stream_path))), 12)
             self.assertEqual(len(decord.VideoReader(str(batch_path))), 12)
 
+    def test_resolve_padding_frames_validation(self):
+        self.assertEqual(inference.resolve_padding_frames(0.0, 0.0, fps=24.0), (0, 0))
+        self.assertEqual(inference.resolve_padding_frames(0.5, 0.25, fps=24.0), (12, 6))
+        with self.assertRaisesRegex(ValueError, "lead_in_seconds"):
+            inference.resolve_padding_frames(-0.1, 0.0, fps=24.0)
+        with self.assertRaisesRegex(ValueError, "lead_out_seconds"):
+            inference.resolve_padding_frames(0.0, float("nan"), fps=24.0)
+        with self.assertRaisesRegex(ValueError, "fps"):
+            inference.resolve_padding_frames(0.5, 0.0, fps=0.0)
+
+    def test_padded_source_and_trimming_writer_match_in_memory_padding(self):
+        rng = np.random.default_rng(2026)
+        num_frames = 150
+        fps = 24.0
+        lead_in_frames, lead_out_frames = 12, 10
+        frames = rng.integers(30, 220, size=(num_frames, 320, 320, 3), dtype=np.uint8)
+        audio = np.linspace(-0.5, 0.5, round(num_frames / fps * 16000), dtype=np.float32)
+        lead_in_samples = round(lead_in_frames / fps * 16000)
+        lead_out_samples = round(lead_out_frames / fps * 16000)
+        padded_audio = np.pad(audio, (lead_in_samples, lead_out_samples), mode="constant")
+        padded_frames = np.pad(
+            frames,
+            ((lead_in_frames, lead_out_frames), (0, 0), (0, 0), (0, 0)),
+            mode="edge",
+        )
+        lm, nfaces = self._synthetic_landmarks(len(padded_frames), 320, 320, 160.0)
+        models = (None, None, None, None)
+
+        seen_window0_audio = []
+
+        def recording_sampler(pipe, whisper, adapter, zero_latents, clip, window_audio,
+                              steps=2, audio_cfg=1.0, seed=0, fps=24):
+            if seed == 5:
+                seen_window0_audio.append(window_audio.copy())
+            return self._fake_sampler(
+                pipe, whisper, adapter, zero_latents, clip, window_audio,
+                steps=steps, audio_cfg=audio_cfg, seed=seed, fps=fps,
+            )
+
+        with mock.patch.object(
+            inference, "detect_landmarks", return_value=(lm.copy(), nfaces.copy())
+        ), mock.patch.object(
+            inference, "detect_landmarks_iter", return_value=(lm.copy(), nfaces.copy())
+        ):
+            mem_full = inference.dub_video(
+                models,
+                padded_frames,
+                padded_audio,
+                steps=2,
+                seed=5,
+                fps=fps,
+                overlap=17,
+                harmonize=True,
+                log=lambda *_: None,
+                sample_fn=recording_sampler,
+            )
+            mem_trimmed = mem_full[lead_in_frames:lead_in_frames + num_frames]
+
+            base_writer = _MemoryWriter()
+            trim_writer = inference.TrimmingFrameWriter(
+                base_writer, skip_start=lead_in_frames, keep_frames=num_frames
+            )
+            padded_source = inference.PaddedFrameSource(
+                _DummyFrameSource(frames, chunk_size=29),
+                lead_in_frames=lead_in_frames,
+                lead_out_frames=lead_out_frames,
+            )
+            self.assertEqual(padded_source.num_frames, len(padded_frames))
+            self.assertTrue(np.array_equal(padded_source.get_frame(0), frames[0]))
+            self.assertTrue(np.array_equal(padded_source.get_frame(lead_in_frames - 1), frames[0]))
+            self.assertTrue(np.array_equal(padded_source.get_frame(lead_in_frames), frames[0]))
+            self.assertTrue(np.array_equal(padded_source.get_frame(padded_source.num_frames - 1), frames[-1]))
+
+            written = inference.dub_video_stream(
+                models,
+                padded_source,
+                padded_audio,
+                trim_writer,
+                steps=2,
+                seed=5,
+                fps=fps,
+                overlap=17,
+                harmonize=True,
+                log=lambda *_: None,
+                sample_fn=recording_sampler,
+            )
+
+        self.assertEqual(written, len(padded_frames))
+        self.assertEqual(trim_writer.written, num_frames)
+        self.assertEqual(len(base_writer.result()), num_frames)
+        self.assertTrue(np.array_equal(mem_trimmed, base_writer.result()))
+        # Window 0 starts with pure silence for lead_in_samples, followed by exact original audio.
+        self.assertEqual(len(seen_window0_audio), 2)
+        for window_audio in seen_window0_audio:
+            self.assertTrue(np.all(window_audio[:lead_in_samples] == 0.0))
+            tail_len = len(window_audio) - lead_in_samples
+            self.assertTrue(np.allclose(window_audio[lead_in_samples:], audio[:tail_len]))
+
+    def test_infer_file_lead_in_out_in_memory_and_streaming(self):
+        from scripts import infer as infer_cli
+
+        infer_cli.import_runtime()
+
+        class _FakeArray:
+            def __init__(self, arr):
+                self._arr = arr
+
+            def asnumpy(self):
+                return self._arr
+
+        class _FakeReader:
+            def __init__(self, frames, fps=24.0):
+                self._frames = frames
+                self._fps = fps
+
+            def __len__(self):
+                return len(self._frames)
+
+            def get_avg_fps(self):
+                return self._fps
+
+            def __getitem__(self, item):
+                return _FakeArray(self._frames[item])
+
+            def get_batch(self, indices):
+                return _FakeArray(self._frames[indices])
+
+        rng = np.random.default_rng(77)
+        fps = 24.0
+        for num_frames in (120, 170):
+            frames = rng.integers(30, 220, size=(num_frames, 320, 320, 3), dtype=np.uint8)
+            raw_audio = np.linspace(-0.25, 0.25, round(num_frames / fps * 16000), dtype=np.float32)
+            lead_in_s, lead_out_s = 0.5, 0.25
+            lead_in_f, lead_out_f = 12, 6
+            padded_n = num_frames + lead_in_f + lead_out_f
+            lm, nfaces = self._synthetic_landmarks(padded_n, 320, 320, 160.0)
+            runtime = {
+                "models": (None, None, None, None),
+                "config": {},
+                "steps": 2,
+                "audio_cfg": 1.0,
+                "sample_fn": self._fake_sampler,
+            }
+            with tempfile.TemporaryDirectory() as tmp:
+                out_path = Path(tmp) / f"out_{num_frames}.mp4"
+                with mock.patch.object(
+                    infer_cli.decord, "VideoReader", return_value=_FakeReader(frames, fps=fps)
+                ), mock.patch.object(
+                    infer_cli.librosa, "load", return_value=(raw_audio.copy(), 16000)
+                ), mock.patch.object(
+                    inference, "detect_landmarks", return_value=(lm.copy(), nfaces.copy())
+                ), mock.patch.object(
+                    inference, "detect_landmarks_iter", return_value=(lm.copy(), nfaces.copy())
+                ):
+                    with self.assertRaisesRegex(ValueError, "--mode clip"):
+                        infer_cli.infer_file(
+                            runtime, "in.mp4", "in.wav", out_path,
+                            mode="clip", lead_in_seconds=lead_in_s,
+                        )
+                    infer_cli.infer_file(
+                        runtime, "in.mp4", "in.wav", out_path,
+                        seed=0, mode="auto", overlap=17, harmonize=True,
+                        lead_in_seconds=lead_in_s, lead_out_seconds=lead_out_s,
+                    )
+                import decord
+                self.assertEqual(len(decord.VideoReader(str(out_path))), num_frames)
+
 
 if __name__ == "__main__":
     unittest.main()
